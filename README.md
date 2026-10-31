@@ -15,11 +15,26 @@ Alpha-Strike Engine adalah *Quantitative Trading Engine* murni berbasis Python (
 * **Integrasi**: JSON Schema (LangChain/Hermes)
 
 ## Struktur Direktori
-* `core/`: Modul perhitungan indikator (`indicators.py`), matriks logika MTFA (`logic_matrix.py`), dan eksekusi filter (`scanner.py`).
+* `core/`: Modul perhitungan indikator (`indicators.py`), matriks logika MTFA (`logic_matrix.py`), eksekusi filter (`scanner.py`), dan pemuat konfigurasi (`config.py`).
 * `data/`: Wrapper API exchange (`exchange_api.py`).
 * `integrations/`: Skema definisi JSON (`hermes_schemas.py`) dan LLM formatter (`llm_formatter.py`).
 * `main_cli.py`: CLI tester manual.
+* `config.yaml`: Pusat seluruh parameter engine (indikator, filter, risiko, scanner, exchange).
 * `requirements.txt`: Daftar dependensi modul.
+
+## Konfigurasi
+Semua parameter yang dapat diubah (periode indikator, ambang filter, pengali ATR, daftar simbol scanner, ambang likuiditas, mode eksekusi, dan lain-lain) berada di `config.yaml`. Setiap parameter memiliki komentar mengenai dampaknya bila nilainya diubah.
+
+```bash
+# Setelah mengubah config.yaml, jalankan ulang CLI agar nilai baru terbaca
+python main_cli.py analyze --symbol SOL/USDT
+```
+
+Untuk memakai file konfigurasi lain tanpa mengubah `config.yaml`:
+
+```bash
+ALPHA_STRIKE_CONFIG=/path/ke/config-lain.yaml python main_cli.py scan
+```
 
 ## Instalasi
 ```bash

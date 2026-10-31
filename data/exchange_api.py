@@ -1,36 +1,69 @@
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
 import ccxt
 import pandas as pd
+
+from core.config import get_config
 
 
 class ExchangeAPI:
     """
-    ccxt wrapper untuk menarik data OHLCV multi-timeframe dengan enableRateLimit=True
-    sesuai spesifikasi ARCHITECTURE.md.
+    ccxt wrapper untuk menarik data OHLCV multi-timeframe.
+
+    Pengaturan exchange (default exchange, rate limit, market type, API key,
+    limit candle, dan pair BTC cadangan) dibaca dari ``config.yaml``.
     """
 
-    def __init__(self, exchange_id: str = "binance", api_key: str = "", secret: str = ""):
-        self.exchange_id = exchange_id.lower()
+    def __init__(
+        self,
+        exchange_id: Optional[str] = None,
+        api_key: Optional[str] = None,
+        secret: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ):
+        self.config = config if config is not None else get_config()
+        self.exchange_cfg = self.config["exchange"]
+
+        self.exchange_id = (exchange_id or self.exchange_cfg["default"]).lower()
         if not hasattr(ccxt, self.exchange_id):
             raise ValueError(f"Exchange '{exchange_id}' tidak didukung oleh ccxt.")
 
+        resolved_api_key = (
+            api_key if api_key is not None else str(self.exchange_cfg.get("api_key", ""))
+        )
+        resolved_secret = (
+            secret if secret is not None else str(self.exchange_cfg.get("api_secret", ""))
+        )
+
         exchange_class = getattr(ccxt, self.exchange_id)
-        config = {
-            "enableRateLimit": True,
-            "options": {"defaultType": "spot"},
+        exchange_options = {
+            "enableRateLimit": bool(self.exchange_cfg["enable_rate_limit"]),
+            "options": {"defaultType": str(self.exchange_cfg["market_type"])},
         }
-        if api_key and secret:
-            config["apiKey"] = api_key
-            config["secret"] = secret
+        if resolved_api_key and resolved_secret:
+            exchange_options["apiKey"] = resolved_api_key
+            exchange_options["secret"] = resolved_secret
 
-        self.exchange: ccxt.Exchange = exchange_class(config)
+        self.exchange: ccxt.Exchange = exchange_class(exchange_options)
 
-    def fetch_ohlcv_df(self, symbol: str, timeframe: str = "15m", limit: int = 150) -> pd.DataFrame:
+    def fetch_ohlcv_df(
+        self,
+        symbol: str,
+        timeframe: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> pd.DataFrame:
         """
         Menarik data OHLCV dari exchange dan mengonversinya menjadi pandas DataFrame.
         """
-        if limit < 60:
-            limit = 100  # Minimal 60+ candle agar rolling(50) dan EMA(50) terhitung valid
+        if timeframe is None:
+            timeframe = str(self.exchange_cfg["default_timeframe"])
+        if limit is None:
+            limit = int(self.exchange_cfg["ohlcv_limit"])
+
+        min_ohlcv_limit = int(self.exchange_cfg["min_ohlcv_limit"])
+        if limit < min_ohlcv_limit:
+            # Minimal candle agar rolling window dan EMA long-period terhitung valid
+            limit = int(self.exchange_cfg["min_ohlcv_limit_fallback"])
 
         raw_ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         if not raw_ohlcv:
@@ -48,28 +81,45 @@ class ExchangeAPI:
     def fetch_mtfa_data(
         self,
         symbol: str,
-        macro_tf: str = "4h",
-        micro_tf: str = "15m",
-        limit: int = 150,
-        include_btc_macro: bool = True,
+        macro_tf: Optional[str] = None,
+        micro_tf: Optional[str] = None,
+        limit: Optional[int] = None,
+        include_btc_macro: Optional[bool] = None,
     ) -> Dict[str, Optional[pd.DataFrame]]:
         """
-        Menarik data Macro, Micro, dan opsional BTC Macro untuk King's Filter.
+        Menarik data Macro, Micro, dan opsional data aset acuan untuk King's Filter.
         """
+        analyze_cfg = self.config["analyze"]
+        reference_asset = str(self.config["logic"]["kings_filter"]["reference_asset"]).upper()
+        default_quote_currency = str(self.exchange_cfg["default_quote_currency"]).upper()
+        if macro_tf is None:
+            macro_tf = str(analyze_cfg["macro_timeframe"])
+        if micro_tf is None:
+            micro_tf = str(analyze_cfg["micro_timeframe"])
+        if limit is None:
+            limit = int(self.exchange_cfg["ohlcv_limit"])
+        if include_btc_macro is None:
+            include_btc_macro = bool(analyze_cfg["include_btc_macro"])
+
         macro_df = self.fetch_ohlcv_df(symbol, timeframe=macro_tf, limit=limit)
         micro_df = self.fetch_ohlcv_df(symbol, timeframe=micro_tf, limit=limit)
 
         btc_df = None
         base_coin = symbol.split("/")[0].upper() if "/" in symbol else symbol.upper()
-        if include_btc_macro and base_coin != "BTC":
-            quote_coin = symbol.split("/")[1].upper() if "/" in symbol else "USDT"
-            btc_symbol = f"BTC/{quote_coin}"
+        if include_btc_macro and base_coin != reference_asset:
+            quote_coin = (
+                symbol.split("/")[1].upper() if "/" in symbol else default_quote_currency
+            )
+            btc_symbol = f"{reference_asset}/{quote_coin}"
+            fallback_symbol = str(self.exchange_cfg["btc_fallback_symbol"])
             try:
                 btc_df = self.fetch_ohlcv_df(btc_symbol, timeframe=macro_tf, limit=limit)
             except Exception:
-                # Fallback ke BTC/USDT jika pair quote lokal tidak tersedia
+                # Fallback ke pair acuan cadangan jika pair quote lokal tidak tersedia
                 try:
-                    btc_df = self.fetch_ohlcv_df("BTC/USDT", timeframe=macro_tf, limit=limit)
+                    btc_df = self.fetch_ohlcv_df(
+                        fallback_symbol, timeframe=macro_tf, limit=limit
+                    )
                 except Exception:
                     btc_df = None
 

@@ -1,58 +1,95 @@
 import argparse
 import sys
+
+from core.config import get_config
 from core.logic_matrix import evaluate_mtfa_and_risk
 from core.scanner import MarketScanner
 from data.exchange_api import ExchangeAPI
 from integrations.hermes_schemas import get_hermes_tools
 from integrations.llm_formatter import format_analysis_output, format_scanner_output
 
-DEFAULT_SCAN_SYMBOLS = [
-    "BTC/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
-    "BNB/USDT",
-    "XRP/USDT",
-    "ADA/USDT",
-    "DOGE/USDT",
-    "AVAX/USDT",
-    "LINK/USDT",
-    "SUI/USDT",
-]
-
 
 def build_parser() -> argparse.ArgumentParser:
+    cfg = get_config()
+    app_cfg = cfg["app"]
+    exchange_cfg = cfg["exchange"]
+    analyze_cfg = cfg["analyze"]
+    scanner_cfg = cfg["scanner"]
+
+    default_exchange = str(exchange_cfg["default"])
+    default_execution_mode = str(analyze_cfg["execution_mode"])
+    execution_modes = [str(mode) for mode in analyze_cfg["execution_modes"]]
+
     parser = argparse.ArgumentParser(
-        prog="alpha-strike",
-        description="Alpha-Strike Quantitative Trading Engine CLI (MTFA + Smart Money + Scanner)",
+        prog=str(app_cfg["name"]),
+        description=str(app_cfg["description"]),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Subcommand: analyze
     analyze_parser = subparsers.add_parser("analyze", help="Analisis MTFA & Risk untuk 1 simbol")
     analyze_parser.add_argument("--symbol", "-s", type=str, required=True, help="Contoh: SOL/USDT atau BTC/IDR")
-    analyze_parser.add_argument("--exchange", "-e", type=str, default="binance", help="binance atau indodax")
-    analyze_parser.add_argument("--macro-tf", type=str, default="4h", help="Timeframe Macro (default: 4h)")
-    analyze_parser.add_argument("--micro-tf", type=str, default="15m", help="Timeframe Micro (default: 15m)")
+    analyze_parser.add_argument(
+        "--exchange",
+        "-e",
+        type=str,
+        default=default_exchange,
+        help=f"Exchange ccxt (default dari config: {default_exchange})",
+    )
+    analyze_parser.add_argument(
+        "--macro-tf",
+        type=str,
+        default=str(analyze_cfg["macro_timeframe"]),
+        help=f"Timeframe Macro (default: {analyze_cfg['macro_timeframe']})",
+    )
+    analyze_parser.add_argument(
+        "--micro-tf",
+        type=str,
+        default=str(analyze_cfg["micro_timeframe"]),
+        help=f"Timeframe Micro (default: {analyze_cfg['micro_timeframe']})",
+    )
     analyze_parser.add_argument(
         "--mode",
         type=str,
-        choices=["FOMO", "SMART_MONEY"],
-        default="FOMO",
-        help="Mode eksekusi: FOMO atau SMART_MONEY",
+        choices=execution_modes,
+        default=default_execution_mode,
+        help=f"Mode eksekusi (default: {default_execution_mode})",
     )
-    analyze_parser.add_argument("--json", action="store_true", help="Output dalam format JSON")
+    analyze_parser.add_argument(
+        "--json",
+        action=argparse.BooleanOptionalAction,
+        default=bool(analyze_cfg["output_json"]),
+        help="Output dalam format JSON (default dari config)",
+    )
 
     # Subcommand: scan
     scan_parser = subparsers.add_parser("scan", help="Pindai koin dengan BB Squeeze + Volume Spike")
-    scan_parser.add_argument("--exchange", "-e", type=str, default="binance", help="binance atau indodax")
-    scan_parser.add_argument("--timeframe", "-t", type=str, default="1h", help="Timeframe scan (default: 1h)")
+    scan_parser.add_argument(
+        "--exchange",
+        "-e",
+        type=str,
+        default=default_exchange,
+        help=f"Exchange ccxt (default dari config: {default_exchange})",
+    )
+    scan_parser.add_argument(
+        "--timeframe",
+        "-t",
+        type=str,
+        default=str(scanner_cfg["timeframe"]),
+        help=f"Timeframe scan (default: {scanner_cfg['timeframe']})",
+    )
     scan_parser.add_argument(
         "--symbols",
         nargs="+",
-        default=DEFAULT_SCAN_SYMBOLS,
+        default=list(scanner_cfg["symbols"]),
         help="Daftar simbol yang akan dipindai (pisahkan dengan spasi)",
     )
-    scan_parser.add_argument("--json", action="store_true", help="Output dalam format JSON")
+    scan_parser.add_argument(
+        "--json",
+        action=argparse.BooleanOptionalAction,
+        default=bool(scanner_cfg["output_json"]),
+        help="Output dalam format JSON (default dari config)",
+    )
 
     # Subcommand: schemas
     subparsers.add_parser("schemas", help="Tampilkan JSON Schema untuk Hermes / LangChain Tools")
@@ -66,7 +103,9 @@ def main() -> int:
 
     if args.command == "schemas":
         import json
-        print(json.dumps(get_hermes_tools(), indent=2, ensure_ascii=False))
+
+        json_indent = int(get_config()["output"]["json_indent"])
+        print(json.dumps(get_hermes_tools(), indent=json_indent, ensure_ascii=False))
         return 0
 
     try:
@@ -81,7 +120,6 @@ def main() -> int:
                 symbol=args.symbol,
                 macro_tf=args.macro_tf,
                 micro_tf=args.micro_tf,
-                include_btc_macro=True,
             )
             result = evaluate_mtfa_and_risk(
                 symbol=args.symbol,

@@ -1,0 +1,375 @@
+# =============================================================================
+# ALPHA-STRIKE ENGINE - KONFIGURASI UTAMA
+# -----------------------------------------------------------------------------
+# Semua parameter operasional engine berada di file ini. Ubah nilai di sini
+# tanpa perlu menyentuh kode Python. Setelah mengubah file, jalankan ulang CLI
+# agar nilai baru terbaca (konfigurasi di-cache selama proses berjalan).
+#
+# Path alternatif dapat diberikan lewat environment variable:
+#   ALPHA_STRIKE_CONFIG=/path/ke/config.yaml python main_cli.py ...
+# =============================================================================
+
+app:
+  # Nama program yang ditampilkan pada bantuan/help CLI.
+  name: "alpha-strike"
+
+  # Deskripsi program yang ditampilkan pada `python main_cli.py --help`.
+  description: "Alpha-Strike Quantitative Trading Engine CLI (MTFA + Smart Money + Scanner)"
+
+
+# =============================================================================
+# FORMAT OUTPUT
+# =============================================================================
+output:
+  # Jumlah spasi indentasi untuk output JSON.
+  # Naikkan agar JSON lebih mudah dibaca; turunkan agar output lebih ringkas.
+  json_indent: 2
+
+  # Jumlah angka di belakang koma untuk harga (close, entry, SL, TP, S/R).
+  # Naikkan untuk aset berharga sangat kecil; turunkan untuk tampilan ringkas.
+  price_decimals: 6
+
+  # Jumlah angka di belakang koma untuk indikator (RSI, ADX).
+  # Tidak mengubah keputusan; hanya memengaruhi tampilan laporan/JSON.
+  indicator_decimals: 2
+
+  # Jumlah angka di belakang koma untuk volume.
+  # Tidak mengubah keputusan; hanya memengaruhi tampilan laporan/JSON.
+  volume_decimals: 2
+
+  # Jumlah angka di belakang koma untuk persentase (misal gap EMA).
+  # Tidak mengubah keputusan; hanya memengaruhi presisi tampilan.
+  percent_decimals: 4
+
+  # Jumlah angka di belakang koma untuk rasio BB Squeeze.
+  # Tidak mengubah keputusan; hanya memengaruhi presisi tampilan scanner.
+  squeeze_decimals: 4
+
+  # Jumlah angka di belakang koma untuk rasio (RRR, volume spike).
+  # Tidak mengubah keputusan; hanya memengaruhi presisi tampilan.
+  ratio_decimals: 2
+
+
+# =============================================================================
+# EXCHANGE & DATA OHLCV
+# =============================================================================
+exchange:
+  # Exchange ccxt default jika pengguna tidak mengisi opsi --exchange.
+  # Contoh: "binance", "indodax", atau exchange lain yang didukung ccxt.
+  default: "binance"
+
+  # Daftar exchange yang ditawarkan sebagai pilihan (enum) pada integrasi LLM.
+  # Tambahkan nama exchange ccxt lain di sini jika ingin dipakai oleh agent LLM.
+  supported:
+    - "binance"
+    - "indodax"
+
+  # true  = ccxt membatasi kecepatan request otomatis (aman dari rate limit).
+  # false = request lebih cepat, tetapi berisiko diblokir/di-rate-limit exchange.
+  enable_rate_limit: true
+
+  # Jenis pasar ccxt yang dipakai. "spot" untuk spot trading; ubah ke "future"
+  # atau "swap" hanya jika akun dan pasangan simbol memang mendukung.
+  market_type: "spot"
+
+  # API key exchange. Kosongkan bila hanya butuh data publik (OHLCV/ticker).
+  # Jangan pernah commit API key asli ke repository publik.
+  api_key: ""
+
+  # API secret pasangan API key di atas. Kosongkan bila hanya butuh data publik.
+  api_secret: ""
+
+  # Timeframe default saat menarik OHLCV bila pemanggil tidak menyebutkannya.
+  # Semakin kecil timeframe, semakin banyak data dan request yang dibutuhkan.
+  default_timeframe: "15m"
+
+  # Jumlah candle default yang ditarik per request OHLCV.
+  # Nilai lebih besar = indikator lebih stabil, tetapi respons API lebih lambat.
+  ohlcv_limit: 150
+
+  # Batas minimum candle agar EMA/rolling window panjang tetap valid.
+  min_ohlcv_limit: 60
+
+  # Nilai limit pengganti jika permintaan di bawah min_ohlcv_limit.
+  # Harus >= min_ohlcv_limit agar indikator tidak menghasilkan nilai kosong.
+  min_ohlcv_limit_fallback: 100
+
+  # Quote currency cadangan saat simbol tidak menyertakan pasangan quote,
+  # misal simbol "SOL" akan dianggap sebagai "SOL/<quote ini>".
+  default_quote_currency: "USDT"
+
+  # Pair aset acuan cadangan untuk King's Filter jika <reference>/<quote>
+  # tidak tersedia. Biasanya "BTC/USDT"; dipakai otomatis saat pair lokal gagal.
+  btc_fallback_symbol: "BTC/USDT"
+
+
+# =============================================================================
+# ANALISIS MTFA (MULTI-TIMEFRAME ANALYSIS)
+# =============================================================================
+analyze:
+  # Timeframe makro untuk menentukan tren utama.
+  # Contoh: "4h" (menengah), "1d" (lebih lambat), "1h" (lebih reaktif).
+  macro_timeframe: "4h"
+
+  # Timeframe mikro untuk memicu entry/exit.
+  # Harus lebih kecil dari macro_timeframe; semakin kecil, sinyal makin cepat
+  # tetapi lebih mudah terkena noise.
+  micro_timeframe: "15m"
+
+  # Mode eksekusi default jika pengguna tidak mengisi opsi --mode.
+  # "FOMO" = market order saat breakout momentum.
+  # "SMART_MONEY" = limit order di area support/EMA fast saat pullback.
+  execution_mode: "FOMO"
+
+  # Pilihan mode eksekusi yang valid untuk CLI dan integrasi LLM.
+  # Hapus salah satu hanya jika implementasi mode tersebut juga dihapus.
+  execution_modes:
+    - "FOMO"
+    - "SMART_MONEY"
+
+  # true  = King's Filter aktif: sinyal altcoin ditolak bila berlawanan tren BTC.
+  # false = analisis altcoin tidak mempertimbangkan tren makro BTC (lebih berisiko).
+  include_btc_macro: true
+
+  # true  = output CLI default berupa JSON.
+  # false = output CLI default berupa laporan teks ringkas.
+  output_json: false
+
+
+# =============================================================================
+# MARKET SCANNER (BB SQUEEZE + VOLUME SPIKE)
+# =============================================================================
+scanner:
+  # Timeframe default pemindaian bila pengguna tidak mengisi opsi --timeframe.
+  # Timeframe lebih kecil = lebih banyak candle per 24 jam dan scan lebih sensitif.
+  timeframe: "1h"
+
+  # Daftar simbol default yang dipindai bila pengguna tidak mengisi --symbols.
+  # Tambah/hapus pair sesuai kebutuhan; pair harus tersedia di exchange terpilih.
+  symbols:
+    - "BTC/USDT"
+    - "ETH/USDT"
+    - "SOL/USDT"
+    - "BNB/USDT"
+    - "XRP/USDT"
+    - "ADA/USDT"
+    - "DOGE/USDT"
+    - "AVAX/USDT"
+    - "LINK/USDT"
+    - "SUI/USDT"
+
+  # Jumlah kandidat teratas yang diminta dari scanner.
+  # Nilai efektif selalu dibatasi oleh top_n_min dan top_n_max di bawah.
+  top_n: 5
+
+  # Jumlah kandidat minimum yang dikembalikan (walaupun top_n lebih kecil).
+  # Menaikkan nilai ini membuat output selalu berisi lebih banyak kandidat.
+  top_n_min: 3
+
+  # Jumlah kandidat maksimum yang dikembalikan.
+  # Menurunkan nilai ini membatasi panjang output scanner.
+  top_n_max: 5
+
+  # true  = output scanner default berupa JSON.
+  # false = output scanner default berupa tabel teks ringkas.
+  output_json: false
+
+  # Jumlah candle per 24 jam jika timeframe tidak ada di peta candles_per_24h.
+  # Dipakai untuk menghitung quote volume 24 jam dari data OHLCV.
+  default_candles_per_24h: 24
+
+  # Peta jumlah candle dalam 24 jam untuk tiap timeframe.
+  # Nilai harus sesuai durasi timeframe agar estimasi volume 24 jam akurat.
+  # Contoh: 15m -> 24 jam / 15 menit = 96 candle.
+  candles_per_24h:
+    "15m": 96   # 24 jam / 15 menit; scan paling sensitif, volume 24H dari 96 candle
+    "30m": 48   # 24 jam / 30 menit; sensitivitas menengah
+    "1h": 24    # 24 jam / 1 jam; seimbang antara noise dan jumlah data
+    "4h": 6     # 24 jam / 4 jam; hanya 6 candle, estimasi volume lebih kasar
+    "1d": 1     # 24 jam / 1 hari; satu candle mewakili volume harian penuh
+
+  # Batas minimum jumlah candle yang ditarik scanner per simbol.
+  # Naikkan bila memakai indikator dengan periode lebih panjang.
+  fetch_limit_min: 60
+
+  # Tambahan candle di atas kebutuhan 24 jam saat menarik data scanner.
+  # Buffer memberi ruang untuk rolling window/indikator sebelum candle terakhir.
+  fetch_limit_buffer: 30
+
+  # Ambang BB Squeeze: (BB Upper - BB Lower) / EMA mid.
+  # Nilai lebih kecil = hanya menerima volatilitas yang sangat sempit.
+  # Nilai lebih besar = lebih banyak koin lolos filter squeeze.
+  squeeze_threshold: 0.05
+
+  # Pengali Volume Spike: volume candle terakhir harus > N x SMA volume.
+  # Naikkan untuk hanya menangkap lonjakan volume yang sangat besar.
+  # Turunkan untuk menerima lonjakan volume yang lebih kecil.
+  volume_spike_multiplier: 3.0
+
+  # Nilai BB Squeeze pengganti bila rasio tidak dapat dihitung (NaN).
+  # Nilai besar membuat koin dengan data tidak valid otomatis gagal filter.
+  squeeze_invalid_fallback: 999.0
+
+  # Ambang likuiditas minimum quote volume 24 jam per pasar.
+  # Koin di bawah ambang ini dibuang sebelum OHLCV ditarik (menghemat request).
+  liquidity_threshold:
+    # Ambang khusus exchange Binance (dalam quote currency, biasanya USDT).
+    # 1.000.000 berarti koin harus punya volume 24 jam minimal $1 juta.
+    binance: 1000000.0
+
+    # Ambang khusus exchange Indodax (dalam Rupiah).
+    # 1.000.000.000 berarti volume 24 jam minimal Rp 1 miliar.
+    indodax: 1000000000.0
+
+    # Ambang untuk simbol apa pun yang quote-nya IDR.
+    # Naikkan untuk hanya memindai koin IDR yang sangat likuid.
+    idr_quote: 1000000000.0
+
+    # Ambang cadangan untuk exchange lain yang tidak tercantum di atas.
+    # Sesuaikan dengan skala quote currency exchange tersebut.
+    default: 1000000.0
+
+
+# =============================================================================
+# PERIODE INDIKATOR TEKNIS
+# =============================================================================
+indicators:
+  ema:
+    # Periode EMA fast untuk konfirmasi arah jangka pendek dan area pullback.
+    # Semakin kecil = lebih reaktif tetapi lebih banyak noise.
+    fast: 21
+
+    # Periode EMA slow untuk penentu tren utama / MACRO score.
+    # Semakin besar = tren lebih stabil tetapi sinyal lebih lambat.
+    slow: 50
+
+    # Periode EMA middle yang dipakai sebagai pembagi rasio BB Squeeze.
+    # Umumnya sama dengan periode Bollinger Bands.
+    mid: 20
+
+  # Periode RSI untuk momentum dan filter overbought/oversold.
+  # Semakin kecil = RSI bergerak lebih cepat; semakin besar = lebih halus.
+  rsi_length: 14
+
+  volume_sma:
+    # Periode SMA volume untuk sinyal micro score.
+    # Menentukan baseline volume "normal" saat mendeteksi volume surge.
+    signal: 20
+
+    # Periode SMA volume khusus market scanner.
+    # Pembanding volume candle terakhir saat mendeteksi volume spike.
+    scanner: 24
+
+  # Periode ATR untuk perhitungan stop loss, take profit, dan trailing stop.
+  # Semakin besar = jarak SL/TP makin lebar dan risiko per posisi makin besar.
+  atr_length: 14
+
+  # Periode ADX untuk filter rezim pasar (trending vs choppy).
+  # Semakin besar = ADX lebih halus tetapi lebih lambat bereaksi.
+  adx_length: 14
+
+  bollinger:
+    # Periode Bollinger Bands untuk mendeteksi squeeze.
+    # Harus sama dengan EMA mid agar rasio squeeze konsisten.
+    length: 20
+
+    # Jumlah standar deviasi Bollinger Bands.
+    # Semakin besar = band makin lebar; rasio squeeze makin kecil.
+    std: 2.0
+
+  support_resistance:
+    # Jumlah candle lookback untuk support/resistance dinamis.
+    # Semakin besar = level S/R makin kuat tetapi kurang responsif.
+    lookback: 50
+
+    # Minimum candle yang dibutuhkan sebelum rolling S/R dihitung.
+    # Nilai lebih kecil membuat S/R muncul lebih awal namun kurang stabil.
+    min_periods: 1
+
+
+# =============================================================================
+# LOGIKA SINYAL, FILTER, DAN MANAJEMEN RISIKO
+# =============================================================================
+logic:
+  micro_score:
+    # Volume dianggap surge jika volume > N x SMA volume sinyal.
+    # Naikkan untuk hanya menerima lonjakan volume besar.
+    volume_surge_multiplier: 1.5
+
+    # Batas bawah RSI untuk sinyal bullish micro.
+    # Naikkan = hanya menerima momentum yang lebih kuat.
+    bull_rsi_min: 45.0
+
+    # Batas atas RSI untuk sinyal bullish micro.
+    # Turunkan = menghindari entry saat RSI sudah terlalu panas.
+    bull_rsi_max: 65.0
+
+    # Ambang RSI overbought yang memicu pemeriksaan rejection candle.
+    # Naikkan untuk lebih toleran terhadap RSI tinggi.
+    overbought_rsi: 70.0
+
+    # Batas atas RSI untuk sinyal bearish micro (selain rejection).
+    # Turunkan = hanya menerima sinyal bearish saat momentum benar-benar lemah.
+    bear_rsi_max: 55.0
+
+    # Rasio upper wick terhadap body candle untuk mendeteksi rejection.
+    # Contoh 1.0 berarti upper wick harus lebih panjang dari body candle.
+    # Naikkan = rejection hanya terdeteksi pada wick yang sangat panjang.
+    rejection_wick_body_ratio: 1.0
+
+  filters:
+    # ADX minimum agar pasar dianggap trending.
+    # Sinyal ditahan bila ADX < nilai ini (pasar choppy).
+    # Naikkan untuk lebih selektif; turunkan untuk lebih banyak sinyal.
+    adx_min: 25.0
+
+    # Jarak minimum |EMA fast - EMA slow| dalam persen harga close.
+    # Jika jarak EMA lebih kecil dari nilai ini, pasar dianggap ranging/HOLD.
+    # Naikkan untuk menghindari pasar sideways; turunkan untuk lebih toleran.
+    ranging_threshold_pct: 0.5
+
+  smart_money:
+    # Jarak maksimum harga close ke EMA fast atau support (dalam persen)
+    # agar pullback dianggap masih dekat area entry Smart Money.
+    # Naikkan = area pullback lebih longgar; turunkan = harus sangat dekat.
+    pullback_distance_pct: 1.0
+
+  kings_filter:
+    # Aset acuan tren makro untuk filter korelasi altcoin.
+    # "BTC" berarti sinyal altcoin ditolak bila berlawanan tren BTC.
+    # Ganti ke aset lain (misal "ETH") hanya jika ingin acuan korelasi berbeda.
+    reference_asset: "BTC"
+
+  risk:
+    # ATR cadangan (dalam persen harga close) bila ATR tidak tersedia.
+    # Dipakai agar SL/TP tetap bisa dihitung saat data indikator kosong.
+    atr_fallback_pct: 1.0
+
+    # Pengali ATR untuk Stop Loss: SL = support - (N x ATR).
+    # Naikkan = SL makin jauh dan risiko per unit makin besar.
+    stop_loss_atr_multiplier: 0.5
+
+    # Rasio risk/reward untuk TP1: TP1 = entry + (N x risk).
+    # 1.0 berarti TP1 berada pada jarak risiko yang sama dengan SL (RRR 1:1).
+    tp1_rrr: 1.0
+
+    # Pengali ATR untuk offset TP2 dari resistance: TP2 = resistance - (N x ATR).
+    # Naikkan = TP2 lebih konservatif (lebih dekat ke entry).
+    tp2_atr_offset_multiplier: 0.1
+
+    # Pengali ATR cadangan untuk risk bila SL awal menghasilkan risk <= 0.
+    # Dipakai sebagai pengaman agar tidak terjadi pembagian nol.
+    risk_fallback_atr_multiplier: 0.5
+
+    # Pengali ATR untuk trailing stop: High tertinggi - (N x ATR).
+    # Naikkan = trailing stop lebih longgar; turunkan = lebih cepat mengunci profit.
+    trailing_stop_atr_multiplier: 2.0
+
+    # RRR minimum agar sinyal dieksekusi.
+    # Jika (TP2 - Entry) / (Entry - SL) < nilai ini, keputusan menjadi HOLD.
+    # Naikkan = hanya menerima reward yang jauh lebih besar dari risiko.
+    min_rrr: 1.5
+
+    # Persentase posisi yang diinstruksikan dijual saat TP1 tercapai.
+    # Nilai ini hanya memengaruhi teks instruksi; eksekusi order tetap manual/agent.
+    tp1_close_percent: 50

@@ -1,7 +1,26 @@
 from typing import Any, Dict, List
 
-# Definisi JSON Schema Native untuk LangChain / Hermes / Gemini Function Calling
-# Sesuai ARCHITECTURE.md Bagian 2 (analyze, scan, monitor)
+from core.config import get_config
+
+# Definisi JSON Schema Native untuk LangChain / Hermes / Gemini Function Calling.
+# Nilai default, enum, dan angka pada deskripsi dibaca dari config.yaml agar
+# schema selalu sinkron dengan konfigurasi engine.
+
+_CFG = get_config()
+_EXCHANGE_CFG = _CFG["exchange"]
+_ANALYZE_CFG = _CFG["analyze"]
+_SCANNER_CFG = _CFG["scanner"]
+_LOGIC_CFG = _CFG["logic"]
+
+_EXCHANGE_ENUM = [str(exchange) for exchange in _EXCHANGE_CFG["supported"]]
+_MODE_ENUM = [str(mode) for mode in _ANALYZE_CFG["execution_modes"]]
+_VOLUME_SPIKE_MULTIPLIER = float(_SCANNER_CFG["volume_spike_multiplier"])
+_SCANNER_SMA_LENGTH = int(_CFG["indicators"]["volume_sma"]["scanner"])
+_TOP_N_MIN = int(_SCANNER_CFG["top_n_min"])
+_TOP_N_MAX = int(_SCANNER_CFG["top_n_max"])
+_BINANCE_LIQUIDITY = float(_SCANNER_CFG["liquidity_threshold"]["binance"])
+_INDODAX_LIQUIDITY = float(_SCANNER_CFG["liquidity_threshold"]["indodax"])
+_TRAILING_ATR_MULTIPLIER = float(_LOGIC_CFG["risk"]["trailing_stop_atr_multiplier"])
 
 ANALYZE_SCHEMA: Dict[str, Any] = {
     "type": "function",
@@ -20,24 +39,24 @@ ANALYZE_SCHEMA: Dict[str, Any] = {
                 },
                 "exchange": {
                     "type": "string",
-                    "enum": ["binance", "indodax"],
-                    "default": "binance",
+                    "enum": _EXCHANGE_ENUM,
+                    "default": str(_EXCHANGE_CFG["default"]),
                     "description": "Nama bursa kripto sumber data OHLCV.",
                 },
                 "macro_tf": {
                     "type": "string",
-                    "default": "4h",
+                    "default": str(_ANALYZE_CFG["macro_timeframe"]),
                     "description": "Timeframe makro untuk identifikasi tren utama (misal '4h', '1d').",
                 },
                 "micro_tf": {
                     "type": "string",
-                    "default": "15m",
+                    "default": str(_ANALYZE_CFG["micro_timeframe"]),
                     "description": "Timeframe mikro untuk pemicu eksekusi (misal '15m', '1h').",
                 },
                 "mode": {
                     "type": "string",
-                    "enum": ["FOMO", "SMART_MONEY"],
-                    "default": "FOMO",
+                    "enum": _MODE_ENUM,
+                    "default": str(_ANALYZE_CFG["execution_mode"]),
                     "description": "Mode eksekusi: FOMO (Market Order) atau SMART_MONEY (Limit Retest/Liquidity Sweep).",
                 },
             },
@@ -51,17 +70,22 @@ SCAN_SCHEMA: Dict[str, Any] = {
     "function": {
         "name": "scan_market",
         "description": (
-            "Memindai pasar untuk mencari Top 3-5 koin yang mengalami Bollinger Band Squeeze "
-            "dan Volume Spike (>3x SMA24) secara bersamaan dengan likuiditas tinggi."
+            f"Memindai pasar untuk mencari Top {_TOP_N_MIN}-{_TOP_N_MAX} koin yang mengalami "
+            f"Bollinger Band Squeeze dan Volume Spike (>{_VOLUME_SPIKE_MULTIPLIER:g}x "
+            f"SMA{_SCANNER_SMA_LENGTH}) secara bersamaan dengan likuiditas tinggi."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "exchange": {
                     "type": "string",
-                    "enum": ["binance", "indodax"],
-                    "default": "binance",
-                    "description": "Bursa target pemindaian ($1M min vol untuk Binance, Rp 1B untuk Indodax).",
+                    "enum": _EXCHANGE_ENUM,
+                    "default": str(_EXCHANGE_CFG["default"]),
+                    "description": (
+                        "Bursa target pemindaian "
+                        f"(min vol 24 jam: {_BINANCE_LIQUIDITY:,.0f} untuk Binance, "
+                        f"{_INDODAX_LIQUIDITY:,.0f} untuk Indodax)."
+                    ),
                 },
                 "symbols": {
                     "type": "array",
@@ -70,8 +94,8 @@ SCAN_SCHEMA: Dict[str, Any] = {
                 },
                 "timeframe": {
                     "type": "string",
-                    "default": "1h",
-                    "description": "Timeframe pemindaian (default '1h').",
+                    "default": str(_SCANNER_CFG["timeframe"]),
+                    "description": f"Timeframe pemindaian (default '{_SCANNER_CFG['timeframe']}').",
                 },
             },
             "required": ["symbols"],
@@ -85,7 +109,8 @@ MONITOR_SCHEMA: Dict[str, Any] = {
         "name": "monitor_position",
         "description": (
             "Memantau posisi aktif untuk menginstruksikan Auto-Breakeven saat TP1 tercapai "
-            "dan menghitung Trailing Stop (High Tertinggi Baru - 2*ATR) menuju TP2."
+            f"dan menghitung Trailing Stop (High Tertinggi Baru - "
+            f"{_TRAILING_ATR_MULTIPLIER:g}*ATR) menuju TP2."
         ),
         "parameters": {
             "type": "object",
@@ -104,7 +129,7 @@ MONITOR_SCHEMA: Dict[str, Any] = {
                 },
                 "tp1": {
                     "type": "number",
-                    "description": "Target Take Profit 1 (RRR 1:1).",
+                    "description": "Target Take Profit 1.",
                 },
                 "tp2": {
                     "type": "number",

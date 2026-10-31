@@ -1,39 +1,70 @@
 from typing import Any, Dict, List, Optional
+
 import pandas as pd
+
+from core.config import get_config
 from core.indicators import compute_indicators
 from data.exchange_api import ExchangeAPI
 
 
 class MarketScanner:
     """
-    Modul Market Scanner sesuai PRD Bagian 2.E:
-      - Filter Likuiditas: Drop koin dengan Quote Volume 24H < $1 Juta (Binance)
-        atau < Rp 1 Miliar (Indodax).
-      - BB Squeeze: (BB_Upper(20,2) - BB_Lower(20,2)) / EMA(20) < 0.05
-      - Volume Spike: Volume(1 candle terakhir) > 3 * Vol_SMA(24)
-      - Output: List Top 3-5 koin yang memenuhi kriteria Squeeze + Spike secara bersamaan.
+    Modul Market Scanner sesuai PRD Bagian 2.E.
+
+    Seluruh ambang batas (likuiditas, BB Squeeze, volume spike, jumlah hasil,
+    dan peta candle per 24 jam) dibaca dari ``config.yaml``.
     """
 
-    def __init__(self, api: ExchangeAPI):
+    def __init__(self, api: ExchangeAPI, config: Optional[Dict[str, Any]] = None):
         self.api = api
+        self.config = config if config is not None else get_config()
 
-    def get_liquidity_threshold(self, symbol: str) -> float:
-        if self.api.exchange_id == "indodax" or symbol.endswith("/IDR"):
-            return 1_000_000_000.0  # Rp 1 Miliar
-        return 1_000_000.0  # $1 Juta (Binance / USDT)
+    def get_liquidity_threshold(
+        self,
+        symbol: str,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Mengembalikan ambang quote volume 24 jam sesuai exchange/quote pair."""
+        cfg = config if config is not None else self.config
+        thresholds = cfg["scanner"]["liquidity_threshold"]
+
+        if self.api.exchange_id == "indodax":
+            return float(thresholds["indodax"])
+        if symbol.upper().endswith("/IDR"):
+            return float(thresholds["idr_quote"])
+        return float(thresholds.get(self.api.exchange_id, thresholds["default"]))
 
     @staticmethod
     def evaluate_symbol_df(
         symbol: str,
         df: pd.DataFrame,
         min_quote_vol_24h: float,
-        candles_per_24h: int = 24,
+        candles_per_24h: Optional[int] = None,
         ticker_quote_vol_24h: Optional[float] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Mengevaluasi satu DataFrame OHLCV apakah lolos Filter Likuiditas, BB Squeeze, dan Volume Spike.
+        Mengevaluasi satu DataFrame OHLCV apakah lolos Filter Likuiditas,
+        BB Squeeze, dan Volume Spike.
         """
-        ind = compute_indicators(df)
+        cfg = config if config is not None else get_config()
+        scanner_cfg = cfg["scanner"]
+
+        if candles_per_24h is None:
+            candles_per_24h = int(scanner_cfg["default_candles_per_24h"])
+
+        squeeze_threshold = float(scanner_cfg["squeeze_threshold"])
+        volume_spike_multiplier = float(scanner_cfg["volume_spike_multiplier"])
+        invalid_squeeze_fallback = float(scanner_cfg["squeeze_invalid_fallback"])
+
+        output_cfg = cfg["output"]
+        price_decimals = int(output_cfg["price_decimals"])
+        volume_decimals = int(output_cfg["volume_decimals"])
+        indicator_decimals = int(output_cfg["indicator_decimals"])
+        squeeze_decimals = int(output_cfg["squeeze_decimals"])
+        ratio_decimals = int(output_cfg["ratio_decimals"])
+
+        ind = compute_indicators(df, config=cfg)
         last = ind.iloc[-1]
 
         # Hitung Quote Volume 24H dari ticker atau jumlah 24H candle terakhir
@@ -45,36 +76,64 @@ class MarketScanner:
         if quote_vol_24h < min_quote_vol_24h:
             return None
 
-        bb_squeeze_val = float(last["BB_SQUEEZE_RATIO"]) if pd.notna(last["BB_SQUEEZE_RATIO"]) else 999.0
+        bb_squeeze_val = (
+            float(last["BB_SQUEEZE_RATIO"])
+            if pd.notna(last["BB_SQUEEZE_RATIO"])
+            else invalid_squeeze_fallback
+        )
         vol_now = float(last["volume"])
-        vol_sma_24 = float(last["VOL_SMA_24"]) if pd.notna(last["VOL_SMA_24"]) else 0.0
+        vol_sma_scanner = (
+            float(last["VOL_SMA_SCANNER"]) if pd.notna(last["VOL_SMA_SCANNER"]) else 0.0
+        )
 
-        is_squeeze = bb_squeeze_val < 0.05
-        is_spike = vol_sma_24 > 0 and (vol_now > 3.0 * vol_sma_24)
+        is_squeeze = bb_squeeze_val < squeeze_threshold
+        is_spike = (
+            vol_sma_scanner > 0
+            and (vol_now > volume_spike_multiplier * vol_sma_scanner)
+        )
 
         if is_squeeze and is_spike:
-            spike_ratio = vol_now / vol_sma_24
+            spike_ratio = vol_now / vol_sma_scanner
             return {
                 "symbol": symbol,
-                "close": round(float(last["close"]), 6),
-                "quote_volume_24h": round(quote_vol_24h, 2),
-                "bb_squeeze_ratio": round(bb_squeeze_val, 4),
-                "volume_spike_ratio": round(spike_ratio, 2),
-                "rsi_14": round(float(last["RSI_14"]), 2),
+                "close": round(float(last["close"]), price_decimals),
+                "quote_volume_24h": round(quote_vol_24h, volume_decimals),
+                "bb_squeeze_ratio": round(bb_squeeze_val, squeeze_decimals),
+                "volume_spike_ratio": round(spike_ratio, ratio_decimals),
+                "rsi": round(float(last["RSI"]), indicator_decimals),
             }
         return None
 
     def scan_market(
         self,
         symbols: List[str],
-        timeframe: str = "1h",
-        top_n: int = 5,
+        timeframe: Optional[str] = None,
+        top_n: Optional[int] = None,
+        config: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Memindai daftar simbol dan mengembalikan Top 3-5 koin yang memenuhi Squeeze + Spike.
+        Memindai daftar simbol dan mengembalikan kandidat yang memenuhi
+        Squeeze + Spike, diurutkan berdasarkan rasio volume spike tertinggi.
         """
-        tf_map = {"15m": 96, "30m": 48, "1h": 24, "4h": 6, "1d": 1}
-        candles_24h = tf_map.get(timeframe.lower(), 24)
+        cfg = config if config is not None else self.config
+        scanner_cfg = cfg["scanner"]
+
+        if timeframe is None:
+            timeframe = str(scanner_cfg["timeframe"])
+        if top_n is None:
+            top_n = int(scanner_cfg["top_n"])
+
+        default_candles_24h = int(scanner_cfg["default_candles_per_24h"])
+        tf_map = {
+            str(tf).lower(): int(candles)
+            for tf, candles in scanner_cfg["candles_per_24h"].items()
+        }
+        candles_24h = tf_map.get(timeframe.lower(), default_candles_24h)
+
+        fetch_limit_min = int(scanner_cfg["fetch_limit_min"])
+        fetch_limit_buffer = int(scanner_cfg["fetch_limit_buffer"])
+        top_n_min = int(scanner_cfg["top_n_min"])
+        top_n_max = int(scanner_cfg["top_n_max"])
 
         tickers = {}
         try:
@@ -84,7 +143,7 @@ class MarketScanner:
 
         matches: List[Dict[str, Any]] = []
         for sym in symbols:
-            threshold = self.get_liquidity_threshold(sym)
+            threshold = self.get_liquidity_threshold(sym, config=cfg)
             ticker_qv = None
             if sym in tickers and tickers[sym].get("quoteVolume") is not None:
                 ticker_qv = float(tickers[sym]["quoteVolume"])
@@ -92,13 +151,18 @@ class MarketScanner:
                     continue  # Pre-filter likuiditas instan tanpa perlu tarik OHLCV
 
             try:
-                df = self.api.fetch_ohlcv_df(sym, timeframe=timeframe, limit=max(60, candles_24h + 30))
+                df = self.api.fetch_ohlcv_df(
+                    sym,
+                    timeframe=timeframe,
+                    limit=max(fetch_limit_min, candles_24h + fetch_limit_buffer),
+                )
                 res = self.evaluate_symbol_df(
                     symbol=sym,
                     df=df,
                     min_quote_vol_24h=threshold,
                     candles_per_24h=candles_24h,
                     ticker_quote_vol_24h=ticker_qv,
+                    config=cfg,
                 )
                 if res is not None:
                     matches.append(res)
@@ -107,4 +171,4 @@ class MarketScanner:
 
         # Urutkan berdasarkan rasio Volume Spike tertinggi
         matches.sort(key=lambda x: x["volume_spike_ratio"], reverse=True)
-        return matches[: max(3, min(top_n, 5))]
+        return matches[: max(top_n_min, min(top_n, top_n_max))]
