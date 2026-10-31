@@ -1,270 +1,235 @@
-# core/logic_matrix.py
+from typing import Any, Dict, Optional
+import numpy as np
 import pandas as pd
+from core.indicators import compute_indicators
 
 
-def evaluate_regime(df_micro: pd.DataFrame) -> dict:
-    last = df_micro.iloc[-1]
-    close = float(last["close"])
-    adx = float(last["ADX_14"])
-    ema_gap = abs(float(last["EMA_21"]) - float(last["EMA_50"]))
-    min_gap = 0.005 * close
-
-    adx_passed = adx >= 25.0
-    ranging_passed = ema_gap >= min_gap
-    passed = bool(adx_passed and ranging_passed)
-
-    return {
-        "passed": passed,
-        "adx_value": adx,
-        "adx_passed": bool(adx_passed),
-        "ema_gap": ema_gap,
-        "min_required_gap": min_gap,
-        "ranging_passed": bool(ranging_passed),
-        "signal": "PASS" if passed else "HOLD",
-    }
+def compute_macro_score_series(df_macro: pd.DataFrame) -> pd.Series:
+    """
+    Vectorized Macro Score:
+      +1 (Bullish) : Close_Macro > EMA_50_Macro
+      -1 (Bearish) : Close_Macro < EMA_50_Macro
+       0 (Neutral) : Close_Macro == EMA_50_Macro
+    """
+    conditions = [
+        df_macro["close"] > df_macro["EMA_50"],
+        df_macro["close"] < df_macro["EMA_50"],
+    ]
+    choices = [1, -1]
+    return pd.Series(np.select(conditions, choices, default=0), index=df_macro.index)
 
 
-def score_tf(df: pd.DataFrame, tf_type: str = "micro") -> dict:
-    last = df.iloc[-1]
-    close = float(last["close"])
+def compute_micro_score_series(df_micro: pd.DataFrame) -> pd.Series:
+    """
+    Vectorized Micro Score sesuai PRD Bagian 2.C:
+      +1 (Bullish) : Close_Micro > EMA_21_Micro, Volume_Micro > 1.5 * Vol_SMA_20, RSI_Micro 45-65.
+      -1 (Bearish) : Close_Micro < EMA_21_Micro, Volume_Micro > 1.5 * Vol_SMA_20,
+                     RSI_Micro < 55 (atau > 70 dgn rejection).
+    """
+    vol_surge = df_micro["volume"] > (1.5 * df_micro["VOL_SMA_20"])
 
-    if tf_type == "macro":
-        ema50 = float(last["EMA_50"])
-        bullish = close > ema50
-        bearish = close < ema50
-        score = 1 if bullish else (-1 if bearish else 0)
-        return {
-            "tf_type": "macro",
-            "trend_bullish": bool(bullish),
-            "trend_bearish": bool(bearish),
-            "score": score,
-        }
+    bull_cond = (
+        (df_micro["close"] > df_micro["EMA_21"])
+        & vol_surge
+        & (df_micro["RSI_14"] >= 45.0)
+        & (df_micro["RSI_14"] <= 65.0)
+    )
 
-    open_p = float(last["open"])
-    ema21 = float(last["EMA_21"])
-    rsi = float(last["RSI_14"])
-    vol = float(last["volume"])
-    vol_sma20 = float(last["Vol_SMA_20"])
+    # Rejection saat RSI > 70: upper wick signifikan atau gagal tembus Resistance
+    upper_wick = df_micro["high"] - np.maximum(df_micro["open"], df_micro["close"])
+    candle_body = (df_micro["close"] - df_micro["open"]).abs()
+    rsi_overbought_rejection = (df_micro["RSI_14"] > 70.0) & (
+        (upper_wick > candle_body) | (df_micro["close"] < df_micro["open"])
+    )
 
-    vol_passed = vol > (1.5 * vol_sma20)
-    bull_trend = close > ema21
-    bear_trend = close < ema21
-    bull_rsi = 45.0 <= rsi <= 65.0
-    bear_rsi = (rsi < 55.0) or (rsi > 70.0 and close < open_p)
+    bear_cond = (
+        (df_micro["close"] < df_micro["EMA_21"])
+        & vol_surge
+        & ((df_micro["RSI_14"] < 55.0) | rsi_overbought_rejection)
+    )
 
-    is_bullish = bull_trend and vol_passed and bull_rsi
-    is_bearish = bear_trend and vol_passed and bear_rsi
-    score = 1 if is_bullish else (-1 if is_bearish else 0)
-
-    return {
-        "tf_type": "micro",
-        "bull_trend_passed": bool(bull_trend),
-        "bear_trend_passed": bool(bear_trend),
-        "volume_passed": bool(vol_passed),
-        "bull_rsi_passed": bool(bull_rsi),
-        "bear_rsi_passed": bool(bear_rsi),
-        "rsi_value": rsi,
-        "score": score,
-    }
+    conditions = [bull_cond, bear_cond]
+    choices = [1, -1]
+    return pd.Series(np.select(conditions, choices, default=0), index=df_micro.index)
 
 
-def check_btc_kings_filter(df_macro_btc: pd.DataFrame, altcoin_signal: int | str) -> dict:
-    last = df_macro_btc.iloc[-1]
-    btc_close = float(last["close"])
-    btc_ema50 = float(last["EMA_50"])
-    btc_dir = 1 if btc_close > btc_ema50 else (-1 if btc_close < btc_ema50 else 0)
-
-    sig_map = {
-        1: 1, "BUY": 1, "STRONG BUY": 1, "🟢 STRONG BUY": 1,
-        -1: -1, "SELL": -1, "STRONG SELL": -1, "🔴 STRONG SELL": -1,
-    }
-    alt_dir = sig_map.get(altcoin_signal, 0)
-
-    conflict = (alt_dir == 1 and btc_dir == -1) or (alt_dir == -1 and btc_dir == 1)
-    passed = not conflict
-
-    return {
-        "passed": bool(passed),
-        "btc_trend_score": btc_dir,
-        "altcoin_direction": alt_dir,
-        "status": "PASS" if passed else "HOLD (Correlated Risk)",
-    }
-
-
-def _calc_targets(entry: float, support: float, resistance: float, atr: float, high: float) -> dict:
-    sl = support - (0.5 * atr)
-    risk = entry - sl
-    tp1 = entry + risk
-    tp2 = resistance - (0.1 * atr)
-    rrr = (tp2 - entry) / risk if risk > 0 else 0.0
-    trailing_sl = high - (2.0 * atr)
-    rrr_passed = rrr >= 1.5
-
-    return {
-        "Entry": entry,
-        "SL": sl,
-        "TP1": tp1,
-        "TP2": tp2,
-        "Trailing_SL": trailing_sl,
-        "Risk": risk,
-        "Reward_TP2": tp2 - entry,
-        "RRR": rrr,
-        "rrr_passed": bool(rrr_passed),
-        "tp1_instruction": "Jual 50%, pindahkan SL ke titik Entry (Auto-Breakeven)",
-    }
-
-
-def evaluate_execution_modes(df_micro: pd.DataFrame, mtfa_signal: str, macro_score: int) -> dict:
-    last = df_micro.iloc[-1]
-    close = float(last["close"])
-    low = float(last["low"])
-    high = float(last["high"])
-    vol = float(last["volume"])
-    vol_sma20 = float(last["Vol_SMA_20"])
-    ema21 = float(last["EMA_21"])
-    support = float(last["Support"])
-    resistance = float(last["Resistance"])
-    atr = float(last["ATR_14"])
-
-    # 1. FOMO Breakout Mode (Market Entry saat STRONG BUY)
-    fomo_triggered = mtfa_signal == "🟢 STRONG BUY"
-    fomo_targets = _calc_targets(close, support, resistance, atr, high)
-    fomo_plan = {
-        "mode": "FOMO",
-        "order_type": "MARKET",
-        "triggered": bool(fomo_triggered),
-        **fomo_targets,
-    }
-
-    # 2. Smart Money Retest Mode (Limit di Support/EMA21, Vol < SMA20, Wick Sweep)
-    vol_shrinking = vol < vol_sma20
-    liquidity_sweep = (low < support) and (close > support)
-    touched_zone = (low <= ema21 <= high) or liquidity_sweep
-    sm_triggered = (macro_score == 1) and vol_shrinking and liquidity_sweep and touched_zone
-
-    # Gunakan EMA_21 jika berada di antara Support dan Close, selain itu gunakan Support
-    sm_entry = ema21 if (support <= ema21 <= close) else support
-    sm_targets = _calc_targets(sm_entry, support, resistance, atr, high)
-    smart_money_plan = {
-        "mode": "SMART_MONEY",
-        "order_type": "LIMIT",
-        "triggered": bool(sm_triggered),
-        "vol_shrinking_passed": bool(vol_shrinking),
-        "liquidity_sweep_passed": bool(liquidity_sweep),
-        "touched_zone_passed": bool(touched_zone),
-        **sm_targets,
-    }
-
-    return {
-        "FOMO": fomo_plan,
-        "SMART_MONEY": smart_money_plan,
-    }
-
-
-def evaluate_decision_matrix(
+def evaluate_mtfa_and_risk(
+    symbol: str,
     df_macro: pd.DataFrame,
     df_micro: pd.DataFrame,
-    df_macro_btc: pd.DataFrame | None = None,
-    strategy_mode: str = "AUTO",
-) -> dict:
-    regime = evaluate_regime(df_micro)
-    macro_eval = score_tf(df_macro, "macro")
-    micro_eval = score_tf(df_micro, "micro")
+    df_btc_macro: Optional[pd.DataFrame] = None,
+    execution_mode: str = "FOMO",
+    current_highest_high: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Mengeksekusi algoritma keputusan penuh sesuai PRD Bagian 2.B, 2.C, dan 2.D.
+    """
+    macro = compute_indicators(df_macro)
+    micro = compute_indicators(df_micro)
 
-    m_score = macro_eval["score"]
-    u_score = micro_eval["score"]
+    macro["MACRO_SCORE"] = compute_macro_score_series(macro)
+    micro["MICRO_SCORE"] = compute_micro_score_series(micro)
 
-    matrix_map = {
-        (1, 1): "🟢 STRONG BUY",
-        (-1, -1): "🔴 STRONG SELL",
-        (1, -1): "⚪ PULLBACK / HOLD",
-        (-1, 1): "⚪ DEAD CAT BOUNCE / HOLD",
-    }
-    raw_mtfa_signal = matrix_map.get((m_score, u_score), "HOLD")
+    last_macro = macro.iloc[-1]
+    last_micro = micro.iloc[-1]
 
-    modes = evaluate_execution_modes(df_micro, raw_mtfa_signal, m_score)
+    macro_score = int(last_macro["MACRO_SCORE"])
+    micro_score = int(last_micro["MICRO_SCORE"])
 
-    if strategy_mode == "FOMO":
-        active_plan = modes["FOMO"]
-    elif strategy_mode == "SMART_MONEY":
-        active_plan = modes["SMART_MONEY"]
+    # Matriks Keputusan Awal (PRD 2.C)
+    if macro_score == 1 and micro_score == 1:
+        raw_signal = "🟢 STRONG BUY"
+        direction = 1
+    elif macro_score == -1 and micro_score == -1:
+        raw_signal = "🔴 STRONG SELL"
+        direction = -1
+    elif macro_score == 1 and micro_score == -1:
+        raw_signal = "⚪ PULLBACK / HOLD"
+        direction = 0
+    elif macro_score == -1 and micro_score == 1:
+        raw_signal = "⚪ DEAD CAT BOUNCE / HOLD"
+        direction = 0
     else:
-        active_plan = (
-            modes["SMART_MONEY"]
-            if modes["SMART_MONEY"]["triggered"] and raw_mtfa_signal != "🟢 STRONG BUY"
-            else modes["FOMO"]
-        )
+        raw_signal = "⚪ HOLD (Neutral Micro/Macro)"
+        direction = 0
 
-    final_signal = raw_mtfa_signal
-    if active_plan["mode"] == "SMART_MONEY" and active_plan["triggered"]:
-        final_signal = "🟢 SMART MONEY BUY (LIMIT)"
+    final_signal = raw_signal
+    filter_reasons = []
 
-    kings = {
-        "passed": True,
-        "btc_trend_score": 0,
-        "altcoin_direction": 0,
-        "status": "SKIPPED (No BTC Data)",
-    }
-    if df_macro_btc is not None:
-        alt_dir = 1 if "BUY" in final_signal else (-1 if "SELL" in final_signal else 0)
-        kings = check_btc_kings_filter(df_macro_btc, alt_dir)
+    # =========================================================================
+    # 3 LAPIS FILTER MAKRO & REZIM PASAR (PRD Bagian 2.B)
+    # =========================================================================
+    adx_val = float(last_micro["ADX_14"]) if pd.notna(last_micro["ADX_14"]) else 0.0
+    close_price = float(last_micro["close"])
+    ema_21 = float(last_micro["EMA_21"])
+    ema_50 = float(last_micro["EMA_50"])
+    ema_gap = abs(ema_21 - ema_50)
+    ranging_threshold = 0.005 * close_price  # 0.5% * Harga Close
 
-    # Urutan gerbang pembatalan sinyal sesuai PRD
-    if not regime["passed"]:
-        final_signal = "HOLD"
-    elif not kings["passed"]:
-        final_signal = "HOLD (Correlated Risk)"
-    elif strategy_mode in ("FOMO", "SMART_MONEY") and not active_plan["triggered"]:
-        final_signal = "HOLD"
-    elif "BUY" in final_signal and not active_plan["rrr_passed"]:
-        final_signal = "HOLD (RRR < 1:1.5)"
+    # 1. Market Regime (ADX Filter)
+    if adx_val < 25.0:
+        final_signal = "⚪ HOLD (Choppy Market: ADX < 25)"
+        filter_reasons.append(f"ADX({adx_val:.2f}) < 25")
+        direction = 0
+
+    # 2. Ranging Filter
+    if ema_gap < ranging_threshold:
+        final_signal = "⚪ HOLD (Ranging Consolidation: |EMA21-EMA50| < 0.5% Close)"
+        filter_reasons.append(f"|EMA21 - EMA50| ({ema_gap:.4f}) < 0.5% Close ({ranging_threshold:.4f})")
+        direction = 0
+
+    # 3. King's Filter (Korelasi BTC) - Jika menganalisis Altcoin
+    btc_trend = None
+    base_coin = symbol.split("/")[0].upper() if "/" in symbol else symbol.upper()
+    if base_coin != "BTC" and df_btc_macro is not None and not df_btc_macro.empty:
+        btc_ind = compute_indicators(df_btc_macro)
+        last_btc = btc_ind.iloc[-1]
+        btc_trend = 1 if float(last_btc["close"]) > float(last_btc["EMA_50"]) else -1
+
+        # Jika arah sinyal Altcoin berlawanan dengan tren BTC, atau jika tren Macro Altcoin berlawanan dgn BTC
+        active_dir = direction if direction != 0 else macro_score
+        if active_dir != 0 and btc_trend != active_dir:
+            final_signal = "⚪ HOLD (Correlated Risk)"
+            filter_reasons.append(
+                f"King's Filter: BTC Macro Trend ({'Bullish' if btc_trend == 1 else 'Bearish'}) "
+                f"berlawanan dengan arah sinyal Altcoin."
+            )
+            direction = 0
+
+    # =========================================================================
+    # SPESIFIKASI EKSEKUSI & MANAJEMEN RISIKO (PRD Bagian 2.D)
+    # =========================================================================
+    support = float(last_micro["SUPPORT"])
+    resistance = float(last_micro["RESISTANCE"])
+    atr = float(last_micro["ATR_14"]) if pd.notna(last_micro["ATR_14"]) else (0.01 * close_price)
+    vol_now = float(last_micro["volume"])
+    vol_sma_20 = float(last_micro["VOL_SMA_20"])
+    low_now = float(last_micro["low"])
+
+    # Validasi Smart Money Mode (Liquidity Sweep & Low Volume Pullback)
+    liquidity_sweep = (low_now < support) and (close_price > support)
+    low_vol_pullback = (vol_now < vol_sma_20) and (
+        abs(close_price - ema_21) / close_price <= 0.01 or abs(close_price - support) / close_price <= 0.01
+    )
+    smart_money_triggered = bool(liquidity_sweep and low_vol_pullback)
+
+    mode_upper = execution_mode.strip().upper()
+    if mode_upper == "SMART_MONEY":
+        # Limit Order di area Support / EMA_21
+        entry_price = max(support, min(ema_21, close_price))
+        order_type = "LIMIT BUY (Area Support / EMA_21)"
+    else:
+        # FOMO Mode (Momentum Breakout): Market order di Close saat ini
+        entry_price = close_price
+        order_type = "MARKET ORDER (Close Price)"
+
+    # Auto-Calculation Target sesuai formula PRD Bagian 2.D:
+    # SL = Support - (0.5 * ATR(14))
+    # TP1 = Entry + Risk (RRR 1:1)
+    # TP2 = Resistance - (0.1 * ATR(14))
+    stop_loss = support - (0.5 * atr)
+    risk = entry_price - stop_loss
+
+    # Pengaman jika harga tepat di bawah/sama dengan stop_loss agar tidak terjadi div-by-zero
+    if risk <= 0:
+        risk = 0.5 * atr
+        stop_loss = entry_price - risk
+
+    tp1 = entry_price + risk
+    tp2 = resistance - (0.1 * atr)
+    reward_tp2 = tp2 - entry_price
+    rrr_tp2 = reward_tp2 / risk if risk > 0 else 0.0
+
+    # Trailing Stop (Opsional di tengah jalan jika harga melewati TP1 menuju TP2)
+    ref_high = current_highest_high if current_highest_high is not None else float(last_micro["high"])
+    trailing_stop = (ref_high - (2.0 * atr)) if ref_high >= tp1 else None
+
+    # Filter RRR (PRD Bagian 2.D): Jika (TP2-Entry)/(Entry-SL) < 1.5 -> HOLD (RRR < 1:1.5)
+    if rrr_tp2 < 1.5:
+        final_signal = "⚪ HOLD (RRR < 1:1.5)"
+        filter_reasons.append(f"RRR ({rrr_tp2:.2f}) di bawah batas minimum 1.5")
+        direction = 0
 
     return {
-        "final_signal": final_signal,
-        "raw_mtfa_signal": raw_mtfa_signal,
-        "strategy_mode": active_plan["mode"],
-        "regime_filter": regime,
-        "kings_filter": kings,
-        "mtfa_scores": {
-            "macro": macro_eval,
-            "micro": micro_eval,
+        "symbol": symbol,
+        "decision": final_signal,
+        "raw_mtfa_signal": raw_signal,
+        "scores": {
+            "macro_score": macro_score,
+            "micro_score": micro_score,
+            "btc_macro_trend": btc_trend,
         },
-        "execution": active_plan,
-        "all_modes": modes,
+        "filters": {
+            "adx_14": round(adx_val, 2),
+            "adx_passed": adx_val >= 25.0,
+            "ema_gap_pct": round((ema_gap / close_price) * 100, 4),
+            "ranging_passed": ema_gap >= ranging_threshold,
+            "kings_filter_passed": "King's Filter" not in " ".join(filter_reasons),
+            "rrr_passed": rrr_tp2 >= 1.5,
+            "rejection_reasons": filter_reasons,
+        },
+        "indicators": {
+            "close": round(close_price, 6),
+            "ema_21": round(ema_21, 6),
+            "ema_50": round(ema_50, 6),
+            "rsi_14": round(float(last_micro["RSI_14"]), 2),
+            "atr_14": round(atr, 6),
+            "volume": round(vol_now, 2),
+            "vol_sma_20": round(vol_sma_20, 2),
+            "support": round(support, 6),
+            "resistance": round(resistance, 6),
+        },
+        "execution_plan": {
+            "mode": mode_upper,
+            "order_type": order_type,
+            "smart_money_valid": smart_money_triggered,
+            "liquidity_sweep_detected": bool(liquidity_sweep),
+            "entry": round(entry_price, 6),
+            "stop_loss": round(stop_loss, 6),
+            "tp1": round(tp1, 6),
+            "tp1_instruction": "Jual 50%, pindahkan SL ke titik Entry (Auto-Breakeven)",
+            "tp2": round(tp2, 6),
+            "rrr": round(rrr_tp2, 2),
+            "trailing_stop": round(trailing_stop, 6) if trailing_stop is not None else None,
+        },
     }
-
-
-if __name__ == "__main__":
-    df_mac = pd.DataFrame([{"close": 110.0, "EMA_50": 100.0}])
-    df_btc = pd.DataFrame([{"close": 65000.0, "EMA_50": 60000.0}])
-
-    # Test 1: FOMO Breakout valid (STRONG BUY & RRR >= 1.5)
-    df_mic_fomo = pd.DataFrame([{
-        "open": 100.0, "high": 106.0, "low": 99.5, "close": 105.0, "volume": 2000.0,
-        "EMA_21": 102.0, "EMA_50": 100.0, "ADX_14": 30.0, "RSI_14": 55.0,
-        "Vol_SMA_20": 1000.0, "Support": 101.0, "Resistance": 120.0, "ATR_14": 2.0,
-    }])
-    res_fomo = evaluate_decision_matrix(df_mac, df_mic_fomo, df_btc, strategy_mode="FOMO")
-    assert res_fomo["final_signal"] == "🟢 STRONG BUY"
-    assert res_fomo["execution"]["SL"] == 100.0
-    assert res_fomo["execution"]["TP1"] == 110.0
-    assert res_fomo["execution"]["TP2"] == 119.8
-    assert res_fomo["execution"]["RRR"] >= 1.5
-
-    # Test 2: Filter RRR membatalkan sinyal jika Resistance terlalu dekat
-    df_mic_low_rrr = df_mic_fomo.copy()
-    df_mic_low_rrr["Resistance"] = 108.0
-    res_low_rrr = evaluate_decision_matrix(df_mac, df_mic_low_rrr, df_btc, strategy_mode="FOMO")
-    assert res_low_rrr["final_signal"] == "HOLD (RRR < 1:1.5)"
-
-    # Test 3: Smart Money Retest valid (Vol < SMA20, Low < Support < Close)
-    df_mic_sm = pd.DataFrame([{
-        "open": 102.0, "high": 103.0, "low": 99.5, "close": 101.0, "volume": 800.0,
-        "EMA_21": 101.5, "EMA_50": 100.0, "ADX_14": 28.0, "RSI_14": 48.0,
-        "Vol_SMA_20": 1000.0, "Support": 100.0, "Resistance": 110.0, "ATR_14": 2.0,
-    }])
-    res_sm = evaluate_decision_matrix(df_mac, df_mic_sm, df_btc, strategy_mode="SMART_MONEY")
-    assert res_sm["final_signal"] == "🟢 SMART MONEY BUY (LIMIT)"
-    assert res_sm["execution"]["Entry"] == 100.0
-    assert res_sm["execution"]["SL"] == 99.0
-    assert res_sm["execution"]["TP1"] == 101.0

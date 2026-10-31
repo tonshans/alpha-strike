@@ -1,151 +1,110 @@
-# core/scanner.py
-import ccxt
+from typing import Any, Dict, List, Optional
 import pandas as pd
-import pandas_ta as ta
+from core.indicators import compute_indicators
+from data.exchange_api import ExchangeAPI
 
 
-def evaluate_squeeze_and_spike(df: pd.DataFrame) -> dict:
-    if len(df) < 24:
-        return {"passed": False, "reason": "Insufficient OHLCV rows (< 24)"}
+class MarketScanner:
+    """
+    Modul Market Scanner sesuai PRD Bagian 2.E:
+      - Filter Likuiditas: Drop koin dengan Quote Volume 24H < $1 Juta (Binance)
+        atau < Rp 1 Miliar (Indodax).
+      - BB Squeeze: (BB_Upper(20,2) - BB_Lower(20,2)) / EMA(20) < 0.05
+      - Volume Spike: Volume(1 candle terakhir) > 3 * Vol_SMA(24)
+      - Output: List Top 3-5 koin yang memenuhi kriteria Squeeze + Spike secara bersamaan.
+    """
 
-    work = df.copy()
+    def __init__(self, api: ExchangeAPI):
+        self.api = api
 
-    if "EMA_20" not in work.columns:
-        work["EMA_20"] = ta.ema(work["close"], length=20)
+    def get_liquidity_threshold(self, symbol: str) -> float:
+        if self.api.exchange_id == "indodax" or symbol.endswith("/IDR"):
+            return 1_000_000_000.0  # Rp 1 Miliar
+        return 1_000_000.0  # $1 Juta (Binance / USDT)
 
-    if "BB_Upper" not in work.columns or "BB_Lower" not in work.columns:
-        bb = ta.bbands(work["close"], length=20, std=2)
-        bbu_col = [c for c in bb.columns if c.startswith("BBU_")][0]
-        bbl_col = [c for c in bb.columns if c.startswith("BBL_")][0]
-        work["BB_Upper"] = bb[bbu_col]
-        work["BB_Lower"] = bb[bbl_col]
+    @staticmethod
+    def evaluate_symbol_df(
+        symbol: str,
+        df: pd.DataFrame,
+        min_quote_vol_24h: float,
+        candles_per_24h: int = 24,
+        ticker_quote_vol_24h: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Mengevaluasi satu DataFrame OHLCV apakah lolos Filter Likuiditas, BB Squeeze, dan Volume Spike.
+        """
+        ind = compute_indicators(df)
+        last = ind.iloc[-1]
 
-    if "Vol_SMA_24" not in work.columns:
-        work["Vol_SMA_24"] = ta.sma(work["volume"], length=24)
+        # Hitung Quote Volume 24H dari ticker atau jumlah 24H candle terakhir
+        if ticker_quote_vol_24h is not None and ticker_quote_vol_24h > 0:
+            quote_vol_24h = float(ticker_quote_vol_24h)
+        else:
+            quote_vol_24h = float(ind["QUOTE_VOLUME"].tail(candles_per_24h).sum())
 
-    last = work.iloc[-1]
-    bb_upper = float(last["BB_Upper"])
-    bb_lower = float(last["BB_Lower"])
-    ema_20 = float(last["EMA_20"])
-    vol_last = float(last["volume"])
-    vol_sma_24 = float(last["Vol_SMA_24"])
+        if quote_vol_24h < min_quote_vol_24h:
+            return None
 
-    if pd.isna(ema_20) or ema_20 == 0.0 or pd.isna(vol_sma_24) or vol_sma_24 == 0.0:
-        return {"passed": False, "reason": "NaN or zero indicator value"}
+        bb_squeeze_val = float(last["BB_SQUEEZE_RATIO"]) if pd.notna(last["BB_SQUEEZE_RATIO"]) else 999.0
+        vol_now = float(last["volume"])
+        vol_sma_24 = float(last["VOL_SMA_24"]) if pd.notna(last["VOL_SMA_24"]) else 0.0
 
-    squeeze_ratio = (bb_upper - bb_lower) / ema_20
-    spike_threshold = 3.0 * vol_sma_24
-    spike_ratio = vol_last / vol_sma_24
+        is_squeeze = bb_squeeze_val < 0.05
+        is_spike = vol_sma_24 > 0 and (vol_now > 3.0 * vol_sma_24)
 
-    is_squeeze = squeeze_ratio < 0.05
-    is_spike = vol_last > spike_threshold
-    passed = bool(is_squeeze and is_spike)
+        if is_squeeze and is_spike:
+            spike_ratio = vol_now / vol_sma_24
+            return {
+                "symbol": symbol,
+                "close": round(float(last["close"]), 6),
+                "quote_volume_24h": round(quote_vol_24h, 2),
+                "bb_squeeze_ratio": round(bb_squeeze_val, 4),
+                "volume_spike_ratio": round(spike_ratio, 2),
+                "rsi_14": round(float(last["RSI_14"]), 2),
+            }
+        return None
 
-    return {
-        "passed": passed,
-        "is_squeeze": bool(is_squeeze),
-        "is_spike": bool(is_spike),
-        "squeeze_ratio": squeeze_ratio,
-        "spike_ratio": spike_ratio,
-        "volume_last": vol_last,
-        "vol_sma_24": vol_sma_24,
-        "close": float(last["close"]),
-    }
+    def scan_market(
+        self,
+        symbols: List[str],
+        timeframe: str = "1h",
+        top_n: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Memindai daftar simbol dan mengembalikan Top 3-5 koin yang memenuhi Squeeze + Spike.
+        """
+        tf_map = {"15m": 96, "30m": 48, "1h": 24, "4h": 6, "1d": 1}
+        candles_24h = tf_map.get(timeframe.lower(), 24)
 
-
-def _extract_quote_volume(ticker: dict) -> float:
-    qv = ticker.get("quoteVolume")
-    if qv is not None:
-        return float(qv)
-    bv = ticker.get("baseVolume")
-    last = ticker.get("last")
-    if bv is not None and last is not None:
-        return float(bv) * float(last)
-    return 0.0
-
-
-def scan_market(
-    exchange_id: str = "binance",
-    timeframe: str = "15m",
-    ohlcv_limit: int = 50,
-    top_n: int = 5,
-) -> dict:
-    ex_id = exchange_id.lower()
-    is_indodax = ex_id == "indodax"
-    quote_currency = "IDR" if is_indodax else "USDT"
-    min_quote_vol = 1_000_000_000.0 if is_indodax else 1_000_000.0
-
-    try:
-        exchange_cls = getattr(ccxt, ex_id)
-        exchange = exchange_cls({"enableRateLimit": True})
-        tickers = exchange.fetch_tickers()
-    except Exception as exc:
-        return {
-            "status": "error",
-            "exchange": ex_id,
-            "error": f"Failed to fetch tickers: {exc}",
-            "top_results": [],
-        }
-
-    # Filter pasangan mata uang utama dan likuiditas minimum 24H
-    liquid_symbols = []
-    suffix = f"/{quote_currency}"
-    for symbol, t_data in tickers.items():
-        if not symbol.endswith(suffix):
-            continue
-        q_vol = _extract_quote_volume(t_data)
-        if q_vol >= min_quote_vol:
-            liquid_symbols.append((symbol, q_vol))
-
-    matches = []
-    errors = []
-
-    for symbol, q_vol in liquid_symbols:
+        tickers = {}
         try:
-            raw_ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=ohlcv_limit)
-            if not raw_ohlcv or len(raw_ohlcv) < 24:
+            tickers = self.api.fetch_tickers(symbols)
+        except Exception:
+            tickers = {}
+
+        matches: List[Dict[str, Any]] = []
+        for sym in symbols:
+            threshold = self.get_liquidity_threshold(sym)
+            ticker_qv = None
+            if sym in tickers and tickers[sym].get("quoteVolume") is not None:
+                ticker_qv = float(tickers[sym]["quoteVolume"])
+                if ticker_qv < threshold:
+                    continue  # Pre-filter likuiditas instan tanpa perlu tarik OHLCV
+
+            try:
+                df = self.api.fetch_ohlcv_df(sym, timeframe=timeframe, limit=max(60, candles_24h + 30))
+                res = self.evaluate_symbol_df(
+                    symbol=sym,
+                    df=df,
+                    min_quote_vol_24h=threshold,
+                    candles_per_24h=candles_24h,
+                    ticker_quote_vol_24h=ticker_qv,
+                )
+                if res is not None:
+                    matches.append(res)
+            except Exception:
                 continue
 
-            df = pd.DataFrame(
-                raw_ohlcv,
-                columns=["timestamp", "open", "high", "low", "close", "volume"],
-            )
-            eval_res = evaluate_squeeze_and_spike(df)
-            if eval_res.get("passed"):
-                matches.append({
-                    "symbol": symbol,
-                    "quote_volume_24h": q_vol,
-                    **eval_res,
-                })
-        except Exception as exc:
-            errors.append({"symbol": symbol, "error": str(exc)})
-
-    # Urutkan dari rasio lonjakan volume tertinggi dan ambil Top 5
-    matches.sort(key=lambda x: x["spike_ratio"], reverse=True)
-    top_results = matches[:top_n]
-
-    return {
-        "status": "ok",
-        "exchange": ex_id,
-        "timeframe": timeframe,
-        "min_quote_volume_threshold": min_quote_vol,
-        "scanned_liquid_pairs": len(liquid_symbols),
-        "matched_count": len(matches),
-        "top_results": top_results,
-        "errors": errors,
-    }
-
-
-if __name__ == "__main__":
-    # Self-check: 29 candle stabil + 1 candle terakhir dengan BB Squeeze (<0.05) & Volume Spike (>3x SMA24)
-    rows = [
-        {"open": 100.0, "high": 100.2, "low": 99.8, "close": 100.0, "volume": 100.0}
-        for _ in range(29)
-    ]
-    rows.append({"open": 100.0, "high": 100.5, "low": 99.9, "close": 100.3, "volume": 500.0})
-    df_test = pd.DataFrame(rows)
-
-    res = evaluate_squeeze_and_spike(df_test)
-    assert res["is_squeeze"] is True, f"Expected squeeze, got {res['squeeze_ratio']}"
-    assert res["is_spike"] is True, f"Expected spike, got {res['spike_ratio']}"
-    assert res["passed"] is True
+        # Urutkan berdasarkan rasio Volume Spike tertinggi
+        matches.sort(key=lambda x: x["volume_spike_ratio"], reverse=True)
+        return matches[: max(3, min(top_n, 5))]

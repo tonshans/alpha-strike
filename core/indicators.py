@@ -1,45 +1,62 @@
+import numpy as np
 import pandas as pd
 import pandas_ta as ta
 
 
-def apply_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Menghitung seluruh indikator baku secara vectorized (tanpa iterasi baris)
+    sesuai ARCHITECTURE.md & PRD.md Bagian 2.A:
+      - EMA Fast (21), EMA Slow (50), EMA (20) untuk BB Squeeze
+      - RSI (14)
+      - SMA Volume (20) untuk sinyal, SMA Volume (24) untuk scanner
+      - ATR (14), ADX (14), Bollinger Bands (20, 2)
+      - S&R Dinamis: Support = Low.rolling(50).min(), Resistance = High.rolling(50).max()
+    """
+    if df is None or df.empty:
+        raise ValueError("DataFrame kosong tidak dapat dihitung indikatornya.")
 
-    df["EMA_21"] = ta.ema(df["close"], length=21)
-    df["EMA_50"] = ta.ema(df["close"], length=50)
-    df["RSI_14"] = ta.rsi(df["close"], length=14)
+    out = df.copy()
 
-    # iloc avoids KeyError across pandas-ta versions that rename float suffixes (e.g. 2.0 vs 2.0_2.0)
-    adx = ta.adx(df["high"], df["low"], df["close"], length=14)
-    df["ADX_14"] = adx.iloc[:, 0]
+    # 1. Trend: EMA 20, 21, 50
+    out["EMA_20"] = ta.ema(out["close"], length=20)
+    out["EMA_21"] = ta.ema(out["close"], length=21)
+    out["EMA_50"] = ta.ema(out["close"], length=50)
 
-    df["ATR_14"] = ta.atr(df["high"], df["low"], df["close"], length=14)
-    df["VOL_SMA_20"] = ta.sma(df["volume"], length=20)
-    df["VOL_SMA_24"] = ta.sma(df["volume"], length=24)
+    # 2. Momentum: RSI (14)
+    out["RSI_14"] = ta.rsi(out["close"], length=14)
 
-    bb = ta.bbands(df["close"], length=20, std=2)
-    df["BB_LOWER_20_2"] = bb.iloc[:, 0]
-    df["BB_UPPER_20_2"] = bb.iloc[:, 2]
+    # 3. Volume: SMA Volume (20) & SMA Volume (24)
+    out["VOL_SMA_20"] = ta.sma(out["volume"], length=20)
+    out["VOL_SMA_24"] = ta.sma(out["volume"], length=24)
 
-    df["SUPPORT_50"] = df["low"].rolling(50).min()
-    df["RESISTANCE_50"] = df["high"].rolling(50).max()
+    # 4. Volatilitas & Filter: ATR (14), ADX (14), Bollinger Bands (20, 2)
+    atr_series = ta.atr(out["high"], out["low"], out["close"], length=14)
+    out["ATR_14"] = atr_series
 
-    return df
+    adx_df = ta.adx(out["high"], out["low"], out["close"], length=14)
+    if adx_df is not None and not adx_df.empty:
+        adx_cols = [c for c in adx_df.columns if c.startswith("ADX_")]
+        out["ADX_14"] = adx_df[adx_cols[0]] if adx_cols else np.nan
+    else:
+        out["ADX_14"] = np.nan
 
+    bb_df = ta.bbands(out["close"], length=20, std=2)
+    if bb_df is not None and not bb_df.empty:
+        bbl_cols = [c for c in bb_df.columns if c.startswith("BBL_")]
+        bbu_cols = [c for c in bb_df.columns if c.startswith("BBU_")]
+        out["BB_LOWER"] = bb_df[bbl_cols[0]] if bbl_cols else np.nan
+        out["BB_UPPER"] = bb_df[bbu_cols[0]] if bbu_cols else np.nan
+    else:
+        out["BB_LOWER"] = np.nan
+        out["BB_UPPER"] = np.nan
 
-if __name__ == "__main__":
-    sample = pd.DataFrame({
-        "open": range(100, 160),
-        "high": range(102, 162),
-        "low": range(98, 158),
-        "close": range(101, 161),
-        "volume": [1000.0] * 60,
-    }, dtype=float)
-    res = apply_indicators(sample)
-    expected = [
-        "EMA_21", "EMA_50", "RSI_14", "ADX_14", "ATR_14",
-        "VOL_SMA_20", "VOL_SMA_24", "BB_UPPER_20_2", "BB_LOWER_20_2",
-        "SUPPORT_50", "RESISTANCE_50",
-    ]
-    assert all(col in res.columns for col in expected), "Missing required indicator columns"
-    assert not res[expected].iloc[-1].isna().any(), "Last row contains NaN values"
+    # 5. S&R Dinamis (Rolling 50)
+    out["SUPPORT"] = out["low"].rolling(window=50, min_periods=1).min()
+    out["RESISTANCE"] = out["high"].rolling(window=50, min_periods=1).max()
+
+    # 6. Turunan Vectorized untuk Scanner & Smart Money
+    out["BB_SQUEEZE_RATIO"] = (out["BB_UPPER"] - out["BB_LOWER"]) / out["EMA_20"]
+    out["QUOTE_VOLUME"] = out["volume"] * out["close"]
+
+    return out

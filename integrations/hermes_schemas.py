@@ -1,152 +1,126 @@
-import json
+from typing import Any, Dict, List
 
-ANALYZE_MARKET_SCHEMA = {
+# Definisi JSON Schema Native untuk LangChain / Hermes / Gemini Function Calling
+# Sesuai ARCHITECTURE.md Bagian 2 (analyze, scan, monitor)
+
+ANALYZE_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
-        "name": "analyze_market",
+        "name": "analyze_asset",
         "description": (
-            "Ekstrak data OHLCV dan jalankan Multi-Timeframe Analysis (MTFA), "
-            "Regime Filter, King's Filter (korelasi BTC), serta kalkulasi target Entry/SL/TP1/TP2."
+            "Menjalankan Multi-Timeframe Analysis (MTFA), 3-Layer Regime Filter (ADX, Ranging, King's Filter), "
+            "serta menghitung titik Entry, Stop Loss, TP1, TP2, dan RRR secara kuantitatif."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "symbol": {
                     "type": "string",
-                    "description": "Simbol pasangan aset, contoh: 'SOL/USDT' atau 'BTC/IDR'.",
+                    "description": "Simbol pasangan aset, misal 'SOL/USDT' atau 'BTC/IDR'.",
                 },
-                "exchange_id": {
+                "exchange": {
                     "type": "string",
                     "enum": ["binance", "indodax"],
                     "default": "binance",
-                    "description": "Nama bursa sumber data OHLCV.",
+                    "description": "Nama bursa kripto sumber data OHLCV.",
                 },
                 "macro_tf": {
                     "type": "string",
-                    "enum": ["1h", "4h", "1d"],
                     "default": "4h",
-                    "description": "Timeframe makro untuk penentuan tren utama dan King's Filter.",
+                    "description": "Timeframe makro untuk identifikasi tren utama (misal '4h', '1d').",
                 },
                 "micro_tf": {
                     "type": "string",
-                    "enum": ["5m", "15m", "30m", "1h"],
                     "default": "15m",
-                    "description": "Timeframe mikro untuk pemicu eksekusi dan filter rezim.",
+                    "description": "Timeframe mikro untuk pemicu eksekusi (misal '15m', '1h').",
                 },
-                "strategy_mode": {
+                "mode": {
                     "type": "string",
-                    "enum": ["AUTO", "FOMO", "SMART_MONEY"],
-                    "default": "AUTO",
-                    "description": "Mode eksekusi: FOMO (Market Breakout), SMART_MONEY (Limit Retest), atau AUTO.",
+                    "enum": ["FOMO", "SMART_MONEY"],
+                    "default": "FOMO",
+                    "description": "Mode eksekusi: FOMO (Market Order) atau SMART_MONEY (Limit Retest/Liquidity Sweep).",
                 },
             },
             "required": ["symbol"],
-            "additionalProperties": False,
         },
     },
 }
 
-CREATE_SCAN_SCHEDULE_SCHEMA = {
+SCAN_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
-        "name": "create_scan_schedule",
+        "name": "scan_market",
         "description": (
-            "Jadwalkan pemindaian pasar otomatis untuk mencari koin dengan likuiditas tinggi "
-            "yang memenuhi kriteria Bollinger Band Squeeze (< 0.05) dan Volume Spike (> 3x SMA24)."
+            "Memindai pasar untuk mencari Top 3-5 koin yang mengalami Bollinger Band Squeeze "
+            "dan Volume Spike (>3x SMA24) secara bersamaan dengan likuiditas tinggi."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "exchange_id": {
+                "exchange": {
                     "type": "string",
                     "enum": ["binance", "indodax"],
                     "default": "binance",
-                    "description": "Bursa target pemindaian ($1M min vol di Binance, Rp 1B di Indodax).",
+                    "description": "Bursa target pemindaian ($1M min vol untuk Binance, Rp 1B untuk Indodax).",
+                },
+                "symbols": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Daftar pasangan simbol yang akan dipindai.",
                 },
                 "timeframe": {
                     "type": "string",
-                    "enum": ["5m", "15m", "1h", "4h"],
-                    "default": "15m",
-                    "description": "Timeframe evaluasi Squeeze dan Volume Spike.",
-                },
-                "interval_minutes": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "default": 15,
-                    "description": "Interval pengulangan jadwal scan dalam satuan menit.",
-                },
-                "top_n": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 10,
-                    "default": 5,
-                    "description": "Jumlah maksimal koin teratas yang dikembalikan.",
+                    "default": "1h",
+                    "description": "Timeframe pemindaian (default '1h').",
                 },
             },
-            "required": ["exchange_id", "timeframe", "interval_minutes"],
-            "additionalProperties": False,
+            "required": ["symbols"],
         },
     },
 }
 
-ADD_TO_MONITOR_SCHEMA = {
+MONITOR_SCHEMA: Dict[str, Any] = {
     "type": "function",
     "function": {
-        "name": "add_to_monitor",
+        "name": "monitor_position",
         "description": (
-            "Tambahkan pasangan aset beserta level harga Entry, Stop Loss, TP1 (Auto-Breakeven), "
-            "dan TP2 ke dalam pemantauan aktif."
+            "Memantau posisi aktif untuk menginstruksikan Auto-Breakeven saat TP1 tercapai "
+            "dan menghitung Trailing Stop (High Tertinggi Baru - 2*ATR) menuju TP2."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "symbol": {
                     "type": "string",
-                    "description": "Simbol pasangan aset yang dipantau, contoh: 'ETH/USDT'.",
-                },
-                "exchange_id": {
-                    "type": "string",
-                    "enum": ["binance", "indodax"],
-                    "default": "binance",
-                    "description": "Nama bursa tempat harga dipantau.",
-                },
-                "strategy_mode": {
-                    "type": "string",
-                    "enum": ["FOMO", "SMART_MONEY"],
-                    "description": "Mode strategi yang digunakan pada posisi ini.",
+                    "description": "Simbol pasangan aset yang sedang berjalan.",
                 },
                 "entry_price": {
                     "type": "number",
-                    "description": "Harga titik masuk (Market atau Limit).",
+                    "description": "Harga Entry posisi saat ini.",
                 },
                 "stop_loss": {
                     "type": "number",
-                    "description": "Level Stop Loss (Support - 0.5 * ATR).",
+                    "description": "Harga Stop Loss awal.",
                 },
                 "tp1": {
                     "type": "number",
-                    "description": "Level Take Profit 1 pada RRR 1:1 (pemicu Auto-Breakeven).",
+                    "description": "Target Take Profit 1 (RRR 1:1).",
                 },
                 "tp2": {
                     "type": "number",
-                    "description": "Level Take Profit 2 (Resistance - 0.1 * ATR).",
+                    "description": "Target Take Profit 2.",
+                },
+                "highest_high": {
+                    "type": "number",
+                    "description": "Harga tertinggi baru yang dicapai sejak entry.",
                 },
             },
-            "required": ["symbol", "strategy_mode", "entry_price", "stop_loss", "tp1", "tp2"],
-            "additionalProperties": False,
+            "required": ["symbol", "entry_price", "stop_loss", "tp1", "tp2"],
         },
     },
 }
 
-HERMES_TOOLS = [
-    ANALYZE_MARKET_SCHEMA,
-    CREATE_SCAN_SCHEDULE_SCHEMA,
-    ADD_TO_MONITOR_SCHEMA,
-]
 
-
-def get_schemas_json(indent: int = 2) -> str:
-    return json.dumps(HERMES_TOOLS, indent=indent)
-
-
-
+def get_hermes_tools() -> List[Dict[str, Any]]:
+    """Mengembalikan daftar lengkap skema fungsi untuk integrasi LLM Agent."""
+    return [ANALYZE_SCHEMA, SCAN_SCHEMA, MONITOR_SCHEMA]
