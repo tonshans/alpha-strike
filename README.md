@@ -17,7 +17,7 @@ Alpha-Strike Engine adalah *Quantitative Trading Engine* murni berbasis Python (
 ## Struktur Direktori
 * `core/`: Modul perhitungan indikator (`indicators.py`), matriks logika MTFA (`logic_matrix.py`), eksekusi filter (`scanner.py`), dan pemuat konfigurasi (`config.py`).
 * `data/`: Wrapper API exchange (`exchange_api.py`).
-* `integrations/`: Skema definisi JSON (`hermes_schemas.py`) dan LLM formatter (`llm_formatter.py`).
+* `integrations/`: Skema definisi JSON (`hermes_schemas.py`), LLM formatter (`llm_formatter.py`), plugin Hermes Agent (`hermes-plugin/`), dan installer `install-hermes-plugin.py`.
 * `main_cli.py`: CLI tester manual.
 * `config.yaml`: Pusat seluruh parameter engine (indikator, filter, risiko, scanner, exchange).
 * `requirements.txt`: Daftar dependensi modul.
@@ -35,6 +35,26 @@ Untuk memakai file konfigurasi lain tanpa mengubah `config.yaml`:
 ```bash
 ALPHA_STRIKE_CONFIG=/path/ke/config-lain.yaml python main_cli.py scan
 ```
+
+## Integrasi Hermes Agent
+
+Plugin siap pakai tersedia di `integrations/hermes-plugin/`. Plugin ini
+menambahkan tiga tool ke Hermes Agent:
+
+* `alpha_strike_analyze_asset` — analisis MTFA + rencana entry/SL/TP.
+* `alpha_strike_scan_market` — scanner BB Squeeze + Volume Spike.
+* `alpha_strike_monitor_position` — auto-breakeven dan trailing stop posisi long.
+
+Pasang otomatis (plugin disalin ke `~/.hermes/plugins/alpha-strike/`, lalu
+diaktifkan di `plugins.enabled`):
+
+```bash
+python integrations/install-hermes-plugin.py
+```
+
+Setelah installer selesai, restart Hermes dan coba perintah seperti
+`Analisa BTC/USDT dengan Alpha-Strike`. Dokumentasi lengkap, opsi installer,
+dan troubleshooting ada di `integrations/hermes-plugin/README.md`.
 
 ## Instalasi
 ```bash

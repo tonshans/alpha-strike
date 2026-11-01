@@ -1,0 +1,35 @@
+name: alpha-strike
+version: "1.0.0"
+manifest_version: 2
+description: >-
+  Alpha-Strike market analysis tools for Hermes Agent: MTFA analysis,
+  BB Squeeze + Volume Spike market scanner, and position risk monitoring.
+author: "Alpha-Strike"
+license: MIT
+homepage: "https://github.com/tonshans/alpha-strike"
+tags:
+  - trading
+  - market-analysis
+  - alpha-strike
+
+provides_tools:
+  - alpha_strike_analyze_asset
+  - alpha_strike_scan_market
+  - alpha_strike_monitor_position
+
+# Optional per-profile settings. The installer also records the same values in
+# <HERMES_HOME>/alpha-strike-install.json so a plain copy install works without
+# editing Hermes' config manually.
+config_schema:
+  alpha_strike_root:
+    type: str
+    default: ""
+    description: "Absolute path to the alpha-strike repository (contains main_cli.py and config.yaml)."
+  alpha_strike_python:
+    type: str
+    default: ""
+    description: "Python interpreter that has alpha-strike's dependencies (ccxt, pandas, pandas-ta, PyYAML)."
+  timeout_seconds:
+    type: int
+    default: 90
+    description: "Maximum seconds to wait for one alpha-strike command (5-600)."
