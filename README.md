@@ -5,7 +5,7 @@ Alpha-Strike Engine adalah *Quantitative Trading Engine* murni berbasis Python (
 ## Fitur Utama
 * **Multi-Timeframe Analysis (MTFA)**: Menganalisis kondisi pasar dengan matriks skor pada timeframe Macro dan Micro.
 * **Filter Makro & Anti-Whipsaw**: Dilengkapi dengan Market Regime (ADX Filter), Ranging Filter, dan King's Filter (Korelasi BTC).
-* **Market Scanner**: Melakukan filter likuiditas, mendeteksi BB Squeeze (volatilitas ditekan), dan Volume Spike.
+* **Market Scanner**: Melakukan filter likuiditas, mendeteksi BB Squeeze (volatilitas ditekan), dan Volume Spike. Mendukung mode watchlist (default) serta universe dynamic dengan filter ticker dan hard cap jumlah OHLCV.
 * **Mode Eksekusi Otonom**: Mendukung *FOMO Mode* (Momentum Breakout) dan *Smart Money Mode* (Liquidity & Retest) dengan Auto-Calculation target untuk SL dan TP berbasis ATR.
 
 ## Tech Stack
@@ -15,7 +15,7 @@ Alpha-Strike Engine adalah *Quantitative Trading Engine* murni berbasis Python (
 * **Integrasi**: JSON Schema (LangChain/Hermes)
 
 ## Struktur Direktori
-* `core/`: Modul perhitungan indikator (`indicators.py`), matriks logika MTFA (`logic_matrix.py`), eksekusi filter (`scanner.py`), dan pemuat konfigurasi (`config.py`).
+* `core/`: Modul perhitungan indikator (`indicators.py`), matriks logika MTFA (`logic_matrix.py`), eksekusi filter (`scanner.py`), pemilih universe dynamic (`universe.py`), dan pemuat konfigurasi (`config.py`).
 * `data/`: Wrapper API exchange (`exchange_api.py`).
 * `integrations/`: Skema definisi JSON (`hermes_schemas.py`), LLM formatter (`llm_formatter.py`), plugin Hermes Agent (`hermes-plugin/`), dan installer `install-hermes-plugin.py`.
 * `main_cli.py`: CLI tester manual.
@@ -35,6 +35,25 @@ Untuk memakai file konfigurasi lain tanpa mengubah `config.yaml`:
 ```bash
 ALPHA_STRIKE_CONFIG=/path/ke/config-lain.yaml python main_cli.py scan
 ```
+
+### Scanner: watchlist vs dynamic
+
+```bash
+# Default: scan watchlist exchange (watchlist_by_exchange / symbols)
+python main_cli.py scan
+
+# Dynamic: pilih pair likuid dari seluruh market exchange
+python main_cli.py scan --all
+
+# Eksplisit: hanya pair yang disebutkan
+python main_cli.py scan --symbols BTC/USDT ETH/USDT
+```
+
+Mode dynamic memakai data ticker untuk menyaring market aktif, quote yang
+diizinkan, likuiditas 24 jam, spread, dan duplikasi base asset. Hanya pair yang
+lolos lalu diambil OHLCV-nya, dibatasi `scanner.universe.max_pairs` (default
+Binance 40, Indodax 25). Semua ambang ada di blok `scanner.universe` pada
+`config.yaml`.
 
 ## Integrasi Hermes Agent
 

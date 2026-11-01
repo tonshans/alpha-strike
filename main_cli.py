@@ -78,11 +78,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(scanner_cfg["timeframe"]),
         help=f"Timeframe scan (default: {scanner_cfg['timeframe']})",
     )
-    scan_parser.add_argument(
+    scan_target = scan_parser.add_mutually_exclusive_group()
+    scan_target.add_argument(
+        "--all",
+        dest="scan_all",
+        action="store_true",
+        help="Scan universe dynamic: pilih pair likuid dari seluruh market exchange",
+    )
+    scan_target.add_argument(
         "--symbols",
         nargs="+",
-        default=list(scanner_cfg["symbols"]),
-        help="Daftar simbol yang akan dipindai (pisahkan dengan spasi)",
+        default=None,
+        help="Daftar simbol eksplisit; jika kosong, watchlist exchange dipakai",
     )
     scan_parser.add_argument(
         "--json",
@@ -137,8 +144,18 @@ def main() -> int:
     if args.command == "scan":
         try:
             scanner = MarketScanner(api=api)
-            results = scanner.scan_market(symbols=args.symbols, timeframe=args.timeframe)
-            print(format_scanner_output(results, as_json=args.json))
+            results = scanner.scan_market(
+                symbols=args.symbols,
+                timeframe=args.timeframe,
+                scan_all=args.scan_all,
+            )
+            print(
+                format_scanner_output(
+                    results,
+                    as_json=args.json,
+                    meta=scanner.last_scan_stats,
+                )
+            )
             return 0
         except Exception as exc:
             print(f"[ERROR] Gagal menjalankan market scanner: {exc}", file=sys.stderr)

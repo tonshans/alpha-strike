@@ -129,6 +129,13 @@ class ExchangeAPI:
             "btc_macro": btc_df,
         }
 
+    def load_markets(self, reload: bool = False) -> Dict[str, Any]:
+        """
+        Memuat metadata seluruh market exchange (spot/future, quote, status aktif).
+        Hasilnya di-cache oleh ccxt sehingga pemanggilan berikutnya murah.
+        """
+        return self.exchange.load_markets(reload)
+
     def fetch_tickers(self, symbols: Optional[List[str]] = None) -> Dict:
         """
         Menarik informasi ticker 24 jam (termasuk quoteVolume) untuk efisiensi pre-filter scanner.
@@ -136,3 +143,17 @@ class ExchangeAPI:
         if self.exchange.has.get("fetchTickers"):
             return self.exchange.fetch_tickers(symbols)
         return {}
+
+    def fetch_all_tickers(self) -> Dict:
+        """
+        Menarik ticker seluruh market dalam satu request untuk dynamic universe.
+
+        Berbeda dari ``fetch_tickers``, method ini melempar error bila exchange
+        tidak mendukung daftar ticker sekaligus, agar scanner bisa memutuskan
+        fallback ke watchlist secara eksplisit.
+        """
+        if not self.exchange.has.get("fetchTickers"):
+            raise ValueError(
+                f"Exchange '{self.exchange_id}' tidak mendukung fetchTickers sekaligus."
+            )
+        return self.exchange.fetch_tickers()

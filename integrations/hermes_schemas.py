@@ -72,7 +72,8 @@ SCAN_SCHEMA: Dict[str, Any] = {
         "description": (
             f"Memindai pasar untuk mencari Top {_TOP_N_MIN}-{_TOP_N_MAX} koin yang mengalami "
             f"Bollinger Band Squeeze dan Volume Spike (>{_VOLUME_SPIKE_MULTIPLIER:g}x "
-            f"SMA{_SCANNER_SMA_LENGTH}) secara bersamaan dengan likuiditas tinggi."
+            f"SMA{_SCANNER_SMA_LENGTH}) secara bersamaan dengan likuiditas tinggi. "
+            "Default memakai watchlist exchange; set 'all' true untuk universe dynamic."
         ),
         "parameters": {
             "type": "object",
@@ -87,10 +88,21 @@ SCAN_SCHEMA: Dict[str, Any] = {
                         f"{_INDODAX_LIQUIDITY:,.0f} untuk Indodax)."
                     ),
                 },
+                "all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "true = pilih pair likuid secara dynamic dari seluruh market "
+                        "(dibatasi scanner.universe.max_pairs). false = watchlist exchange."
+                    ),
+                },
                 "symbols": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Daftar pasangan simbol yang akan dipindai.",
+                    "description": (
+                        "Opsional. Daftar pasangan eksplisit; bila diisi, mengalahkan "
+                        "mode watchlist/dynamic."
+                    ),
                 },
                 "timeframe": {
                     "type": "string",
@@ -98,7 +110,6 @@ SCAN_SCHEMA: Dict[str, Any] = {
                     "description": f"Timeframe pemindaian (default '{_SCANNER_CFG['timeframe']}').",
                 },
             },
-            "required": ["symbols"],
         },
     },
 }

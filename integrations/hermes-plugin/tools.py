@@ -103,6 +103,21 @@ def _symbols_param(params: Dict[str, Any]) -> Optional[List[str]]:
     return symbols or None
 
 
+def _bool_param(params: Dict[str, Any], key: str) -> Optional[bool]:
+    value = params.get(key)
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "1", "yes", "on"}:
+            return True
+        if text in {"false", "0", "no", "off"}:
+            return False
+    raise InvalidInput(f"Parameter '{key}' harus berupa boolean true/false.")
+
+
 def _mode_param(params: Dict[str, Any]) -> Optional[str]:
     value = params.get("mode")
     if value is None:
@@ -163,6 +178,7 @@ def scan_market(ctx: Any, params: Dict[str, Any], **kwargs: Any) -> str:
         exchange = _string_param(params, "exchange", pattern=_EXCHANGE_RE, label="'binance' atau 'indodax'")
         timeframe = _string_param(params, "timeframe", pattern=_TIMEFRAME_RE, label="'1h', '4h'")
         symbols = _symbols_param(params)
+        scan_all = _bool_param(params, "all")
 
         args = ["scan", "--json"]
         if exchange:
@@ -170,7 +186,10 @@ def scan_market(ctx: Any, params: Dict[str, Any], **kwargs: Any) -> str:
         if timeframe:
             args += ["--timeframe", timeframe]
         if symbols:
+            # Daftar eksplisit selalu menang atas mode dynamic/watchlist.
             args += ["--symbols", *symbols]
+        elif scan_all:
+            args += ["--all"]
 
         data, meta = client.run_cli(ctx, args, tool=TOOL_SCAN)
         return client.success(TOOL_SCAN, data, meta)

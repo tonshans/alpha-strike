@@ -60,14 +60,15 @@ Setelah plugin aktif, tool muncul di toolset `alpha_strike`:
 | Tool | Fungsi |
 | --- | --- |
 | `alpha_strike_analyze_asset` | MTFA + filter ADX/Ranging/King's Filter + rencana entry/SL/TP1/TP2/RRR untuk satu simbol. |
-| `alpha_strike_scan_market` | Scanner BB Squeeze + Volume Spike dengan filter likuiditas 24 jam. |
+| `alpha_strike_scan_market` | Scanner BB Squeeze + Volume Spike dengan filter likuiditas 24 jam. Default watchlist; `all: true` untuk universe dynamic. |
 | `alpha_strike_monitor_position` | Pantau posisi long: auto-breakeven setelah TP1, trailing stop ATR, dan target TP2. |
 
 Contoh perintah di chat Hermes:
 
 ```text
 Analisa BTC/USDT dengan Alpha-Strike, mode SMART_MONEY.
-Pindai market Binance timeframe 1h untuk koin dengan BB Squeeze + volume spike.
+Pindai watchlist Indodax timeframe 1h untuk koin dengan BB Squeeze + volume spike.
+Pindai seluruh market Binance (dynamic) timeframe 1h dengan Alpha-Strike.
 Pantau posisi long SOL/USDT: entry 180, SL 172, TP1 190, TP2 205, high 196.
 ```
 

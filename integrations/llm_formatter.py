@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from core.config import get_config
 
@@ -53,7 +53,48 @@ def format_analysis_output(result: Dict[str, Any], as_json: bool = False) -> str
     return "\n".join(lines)
 
 
-def format_scanner_output(results: List[Dict[str, Any]], as_json: bool = False) -> str:
+def _format_scan_summary(meta: Optional[Dict[str, Any]]) -> str:
+    """Ringkasan funnel scan untuk output teks/JSON."""
+    if not isinstance(meta, dict) or not meta:
+        return ""
+
+    scope = str(meta.get("scope", ""))
+    labels = {
+        "watchlist": "watchlist",
+        "watchlist-fallback": "watchlist (fallback dynamic)",
+        "dynamic": "dynamic",
+        "explicit": "daftar eksplisit",
+    }
+    parts = [f"Mode: {labels.get(scope, scope or 'tidak diketahui')}"]
+
+    selected = meta.get("selected")
+    requested = meta.get("requested_symbols")
+    scanned = meta.get("ohlcv_ok")
+    errors = meta.get("ohlcv_error")
+    matches = meta.get("matches")
+
+    if selected is not None and scope == "dynamic":
+        parts.append(f"Universe: {selected} pair")
+    if requested is not None:
+        parts.append(f"Pair diminta: {requested}")
+    if scanned is not None:
+        text = f"OHLCV sukses: {scanned}"
+        if errors:
+            text += f" (gagal: {errors})"
+        parts.append(text)
+    if matches is not None:
+        parts.append(f"Kandidat: {matches}")
+    if meta.get("error"):
+        parts.append(f"Error universe: {meta['error']}")
+
+    return " | ".join(parts)
+
+
+def format_scanner_output(
+    results: List[Dict[str, Any]],
+    as_json: bool = False,
+    meta: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Mengubah hasil Market Scanner menjadi JSON atau tabel ringkas.
     """
@@ -61,15 +102,28 @@ def format_scanner_output(results: List[Dict[str, Any]], as_json: bool = False) 
     json_indent = int(cfg["output"]["json_indent"])
 
     if as_json:
-        return json.dumps({"top_candidates": results}, indent=json_indent, ensure_ascii=False)
+        payload: Dict[str, Any] = {"top_candidates": results}
+        if meta:
+            payload["scan"] = meta
+        return json.dumps(payload, indent=json_indent, ensure_ascii=False)
+
+    summary = _format_scan_summary(meta)
 
     if not results:
-        return "=== MARKET SCANNER ===\nTidak ada koin yang memenuhi kriteria BB Squeeze + Volume Spike saat ini."
+        lines = ["=== MARKET SCANNER ==="]
+        if summary:
+            lines.append(summary)
+        lines.append(
+            "Tidak ada koin yang memenuhi kriteria BB Squeeze + Volume Spike saat ini."
+        )
+        return "\n".join(lines)
 
     scanner_sma_length = cfg["indicators"]["volume_sma"]["scanner"]
     volume_decimals = int(cfg["output"]["volume_decimals"])
 
     lines = ["=== MARKET SCANNER: TOP SQUEEZE + SPIKE CANDIDATES ==="]
+    if summary:
+        lines.append(summary)
     for idx, item in enumerate(results, start=1):
         lines.append(
             f"{idx}. {item['symbol']} | Close: {item['close']} | "

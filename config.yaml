@@ -56,7 +56,7 @@ output:
 exchange:
   # Exchange ccxt default jika pengguna tidak mengisi opsi --exchange.
   # Contoh: "binance", "indodax", atau exchange lain yang didukung ccxt.
-  default: "binance"
+  default: "indodax"
 
   # Daftar exchange yang ditawarkan sebagai pilihan (enum) pada integrasi LLM.
   # Tambahkan nama exchange ccxt lain di sini jika ingin dipakai oleh agent LLM.
@@ -142,10 +142,10 @@ analyze:
 scanner:
   # Timeframe default pemindaian bila pengguna tidak mengisi opsi --timeframe.
   # Timeframe lebih kecil = lebih banyak candle per 24 jam dan scan lebih sensitif.
-  timeframe: "1h"
+  timeframe: "4h"
 
-  # Daftar simbol default yang dipindai bila pengguna tidak mengisi --symbols.
-  # Tambah/hapus pair sesuai kebutuhan; pair harus tersedia di exchange terpilih.
+  # Watchlist default. Hanya dipakai saat mode watchlist (default).
+  # Mode dynamic diaktifkan lewat opsi CLI --all dan mengabaikan daftar ini.
   symbols:
     - "BTC/USDT"
     - "ETH/USDT"
@@ -157,6 +157,94 @@ scanner:
     - "AVAX/USDT"
     - "LINK/USDT"
     - "SUI/USDT"
+
+  # Watchlist khusus per exchange. Bila exchange terpilih ada di sini, daftar ini
+  # menggantikan 'symbols' di atas. Berguna karena Binance memakai quote USDT,
+  # sedangkan Indodax mayoritas memakai quote IDR.
+  watchlist_by_exchange:
+    binance:
+      - "BTC/USDT"
+      - "ETH/USDT"
+      - "SOL/USDT"
+      - "BNB/USDT"
+      - "XRP/USDT"
+      - "ADA/USDT"
+      - "DOGE/USDT"
+      - "AVAX/USDT"
+      - "LINK/USDT"
+      - "SUI/USDT"
+    indodax:
+      - "BTC/IDR"
+      - "ETH/IDR"
+      - "SOL/IDR"
+      - "BNB/IDR"
+      - "XRP/IDR"
+      - "ADA/IDR"
+      - "DOGE/IDR"
+      - "AVAX/IDR"
+      - "LINK/IDR"
+      - "SUI/IDR"
+
+  # Pengaturan universe untuk mode dynamic (--all).
+  # Pair dipilih dari seluruh market memakai data ticker (satu request),
+  # lalu hanya pair terpilih yang ditarik OHLCV-nya.
+  universe:
+    # Quote yang diizinkan per exchange. Gunakan satu quote per exchange agar
+    # quoteVolume antar mata uang tidak dibandingkan secara langsung.
+    quote_currencies:
+      binance: ["USDT"]
+      indodax: ["IDR"]
+    default_quote_currencies: ["USDT"]
+
+    # Hard cap jumlah pair yang ditarik OHLCV. Ini yang membatasi biaya request.
+    max_pairs:
+      binance: 40
+      indodax: 25
+      default: 30
+
+    # Gate likuiditas awal untuk mode dynamic, berbasis quote currency.
+    # Nilainya boleh lebih ketat dari scanner.liquidity_threshold di bawah.
+    min_quote_volume_24h:
+      USDT: 10000000      # 10 juta USDT
+      IDR: 500000000      # 500 juta Rupiah
+      default: 5000000
+
+    # Batas spread bid/ask maksimum. Pair dengan spread lebih lebar dibuang
+    # sebelum OHLCV ditarik. Filter dilewati bila bid/ask tidak tersedia.
+    max_spread_pct:
+      USDT: 0.5
+      IDR: 2.0
+      default: 1.0
+
+    # Base asset yang tidak ikut scan dynamic: stablecoin, fiat, token
+    # terbungkus/staked, dan komoditas tokenized.
+    exclude_bases:
+      - "USDT"
+      - "USDC"
+      - "FDUSD"
+      - "TUSD"
+      - "BUSD"
+      - "DAI"
+      - "USDP"
+      - "EUR"
+      - "GBP"
+      - "IDR"
+      - "USD"
+      - "XAUT"
+      - "PAXG"
+      - "WBTC"
+      - "WETH"
+      - "WBETH"
+      - "STETH"
+      - "WSTETH"
+
+    # Pola token leveraged. Jangan memakai pola generik 'UP$'/'DOWN$' karena
+    # bisa membuang token sah seperti JUP.
+    exclude_symbol_patterns:
+      - '(3L|3S|5L|5S|BULL|BEAR)$'
+
+    # true = bila dynamic universe gagal/kosong, scan watchlist sebagai cadangan.
+    fallback_to_watchlist: true
 
   # Jumlah kandidat teratas yang diminta dari scanner.
   # Nilai efektif selalu dibatasi oleh top_n_min dan top_n_max di bawah.
@@ -224,6 +312,10 @@ scanner:
     # Ambang untuk simbol apa pun yang quote-nya IDR.
     # Naikkan untuk hanya memindai koin IDR yang sangat likuid.
     idr_quote: 1000000000.0
+
+    # Ambang untuk simbol ber-quote USD/USDT di exchange selain Binance.
+    # Dipakai misalnya oleh pair BTC/USDT yang tersedia di Indodax.
+    usd_quote: 1000000.0
 
     # Ambang cadangan untuk exchange lain yang tidak tercantum di atas.
     # Sesuaikan dengan skala quote currency exchange tersebut.

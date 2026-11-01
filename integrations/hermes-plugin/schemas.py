@@ -58,8 +58,9 @@ SCAN_MARKET = {
         "Pindai pasar untuk mencari kandidat dengan Bollinger Band Squeeze dan "
         "Volume Spike secara bersamaan, setelah filter likuiditas 24 jam. "
         "Mengembalikan JSON berisi daftar kandidat teratas yang diurutkan "
-        "berdasarkan rasio volume spike. Bila 'symbols' dikosongkan, daftar "
-        "watchlist default dari config.yaml Alpha-Strike yang dipakai."
+        "berdasarkan rasio volume spike. Default memakai watchlist exchange; "
+        "set 'all' true untuk memilih pair likuid secara dynamic dari seluruh "
+        "market. Bila 'symbols' diisi, hanya daftar itu yang dipindai."
     ),
     "parameters": {
         "type": "object",
@@ -68,13 +69,20 @@ SCAN_MARKET = {
                 "type": "string",
                 "description": "Nama exchange ccxt, misal 'binance' atau 'indodax'. Default: config.yaml.",
             },
+            "all": {
+                "type": "boolean",
+                "description": (
+                    "true = scan universe dynamic (pair likuid dipilih otomatis, "
+                    "dibatasi max_pairs di config.yaml). false/kosong = watchlist exchange."
+                ),
+            },
             "symbols": {
                 "type": "array",
                 "items": {"type": "string"},
                 "maxItems": 50,
                 "description": (
-                    "Daftar pasangan yang akan dipindai, misal ['BTC/USDT', 'ETH/USDT']. "
-                    "Kosongkan untuk memakai watchlist default config.yaml (maksimal 50 simbol)."
+                    "Daftar pasangan eksplisit, misal ['BTC/USDT', 'ETH/USDT']. "
+                    "Bila diisi, mengalahkan mode watchlist/dynamic (maksimal 50 simbol)."
                 ),
             },
             "timeframe": {
