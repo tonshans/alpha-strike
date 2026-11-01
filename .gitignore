@@ -1,5 +1,3 @@
-**.gitignore**
-```text
 # Environments
 .env
 .venv
